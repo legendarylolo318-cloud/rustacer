@@ -262,6 +262,7 @@ pub struct App {
 
 impl App {
     pub fn new(cc: &eframe::CreationContext<'_>, cfg: Config) -> Self {
+        crate::theme::apply_sizing(&cc.egui_ctx);
         let (tx, rx) = channel();
         let bus = Bus {
             tx,
@@ -363,10 +364,7 @@ impl App {
 
     fn apply_theme(&mut self, ctx: &Context) {
         if self.applied_theme != Some(self.cfg.theme) {
-            ctx.set_visuals(match self.cfg.theme {
-                Theme::Dark => egui::Visuals::dark(),
-                Theme::Light => egui::Visuals::light(),
-            });
+            ctx.set_visuals(crate::theme::visuals(self.cfg.theme));
             self.applied_theme = Some(self.cfg.theme);
         }
     }

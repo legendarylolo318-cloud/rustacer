@@ -161,6 +161,30 @@ impl IDownloadCompletedCallback_Impl for DownloadCb_Impl {
     }
 }
 
+#[implement(IDownloadProgressChangedCallback)]
+struct DownloadProgressCb;
+impl IDownloadProgressChangedCallback_Impl for DownloadProgressCb_Impl {
+    fn Invoke(
+        &self,
+        _: Ref<IDownloadJob>,
+        _: Ref<IDownloadProgressChangedCallbackArgs>,
+    ) -> windows::core::Result<()> {
+        Ok(())
+    }
+}
+
+#[implement(IInstallationProgressChangedCallback)]
+struct InstallProgressCb;
+impl IInstallationProgressChangedCallback_Impl for InstallProgressCb_Impl {
+    fn Invoke(
+        &self,
+        _: Ref<IInstallationJob>,
+        _: Ref<IInstallationProgressChangedCallbackArgs>,
+    ) -> windows::core::Result<()> {
+        Ok(())
+    }
+}
+
 #[implement(IInstallationCompletedCallback)]
 struct InstallCb;
 impl IInstallationCompletedCallback_Impl for InstallCb_Impl {
@@ -343,7 +367,7 @@ pub fn install_updates(
         let downloader = sess.CreateUpdateDownloader()?;
         downloader.SetUpdates(&to_install)?;
         let djob = downloader.BeginDownload(
-            None,
+            &IDownloadProgressChangedCallback::from(DownloadProgressCb),
             &IDownloadCompletedCallback::from(DownloadCb),
             &VARIANT::default(),
         )?;
@@ -399,7 +423,7 @@ pub fn install_updates(
         installer.SetUpdates(&ready)?;
         let _ = installer.SetAllowSourcePrompts(false.into());
         let ijob = installer.BeginInstall(
-            None,
+            &IInstallationProgressChangedCallback::from(InstallProgressCb),
             &IInstallationCompletedCallback::from(InstallCb),
             &VARIANT::default(),
         )?;

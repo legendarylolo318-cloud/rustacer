@@ -14,7 +14,7 @@ use rustacer_core::startup::Source;
 use rustacer_core::strings::{tr, Lang};
 use rustacer_core::util::{format_bytes, open_path, reveal_in_explorer};
 
-const ROW_H: f32 = 20.0;
+const ROW_H: f32 = 26.0;
 
 pub fn sidebar(app: &mut App, ui: &mut Ui, ctx: &Context) {
     egui::Panel::left("nav")
@@ -29,7 +29,7 @@ pub fn sidebar(app: &mut App, ui: &mut Ui, ctx: &Context) {
                 let sel = app.page == p;
                 if ui
                     .add_sized(
-                        [ui.available_width(), 28.0],
+                        [ui.available_width(), 38.0],
                         egui::Button::selectable(sel, tr(Lang::English, p.key())),
                     )
                     .clicked()
@@ -1415,13 +1415,12 @@ fn settings(app: &mut App, ui: &mut Ui) {
         .spacing([24.0, 10.0])
         .show(ui, |ui| {
             ui.label("Theme");
-            ui.horizontal(|ui| {
-                changed |= ui
-                    .selectable_value(&mut app.cfg.theme, Theme::Dark, "Dark")
-                    .changed();
-                changed |= ui
-                    .selectable_value(&mut app.cfg.theme, Theme::Light, "Light")
-                    .changed();
+            ui.horizontal_wrapped(|ui| {
+                for t in Theme::ALL {
+                    changed |= ui
+                        .selectable_value(&mut app.cfg.theme, t, t.label())
+                        .changed();
+                }
             });
             ui.end_row();
             ui.label("Refresh interval (ms)");

@@ -8,6 +8,35 @@ pub enum Theme {
     #[default]
     Dark,
     Light,
+    Midnight,
+    Nord,
+    Dracula,
+    Solarized,
+    Forest,
+}
+
+impl Theme {
+    pub const ALL: [Theme; 7] = [
+        Theme::Dark,
+        Theme::Light,
+        Theme::Midnight,
+        Theme::Nord,
+        Theme::Dracula,
+        Theme::Solarized,
+        Theme::Forest,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Theme::Dark => "Dark",
+            Theme::Light => "Light",
+            Theme::Midnight => "Midnight",
+            Theme::Nord => "Nord",
+            Theme::Dracula => "Dracula",
+            Theme::Solarized => "Solarized Dark",
+            Theme::Forest => "Forest",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -110,6 +139,18 @@ mod tests {
         assert_eq!(c.refresh_interval_ms, 250);
         assert_eq!(c.old_driver_years, 30);
         assert_eq!(c.cpu_alert_percent, 90.0);
+    }
+
+    #[test]
+    fn every_theme_roundtrips() {
+        for t in Theme::ALL {
+            let c = Config {
+                theme: t,
+                ..Config::default()
+            };
+            assert_eq!(Config::from_toml(&c.to_toml().unwrap()).unwrap().theme, t);
+        }
+        assert!(Config::from_toml("theme = 'not-a-theme'").is_err());
     }
 
     #[test]

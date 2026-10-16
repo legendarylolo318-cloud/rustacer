@@ -2,6 +2,7 @@
 
 mod app;
 mod pages;
+mod theme;
 mod widgets;
 
 use rustacer_core::config::{log_dir, Config};
