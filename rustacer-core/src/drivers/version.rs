@@ -137,9 +137,15 @@ fn civil_from_days(z: i64) -> Date {
     }
 }
 
-/// Informational "old driver" check.
+/// Some vendors stamp INF-only packages with a deliberate placeholder date (Intel uses
+/// 1968-07-18) so Windows ranks them low. Such dates say nothing about age.
+pub fn is_placeholder_date(d: Date) -> bool {
+    d.year < 1990
+}
+
+/// Informational "old driver" check. Placeholder dates are never "old".
 pub fn is_old(date: Option<Date>, threshold_years: u32, today: Date) -> bool {
-    date.is_some_and(|d| d.years_until(today) >= threshold_years)
+    date.is_some_and(|d| !is_placeholder_date(d) && d.years_until(today) >= threshold_years)
 }
 
 #[cfg(test)]
@@ -204,6 +210,10 @@ mod tests {
         assert!(is_old(Some(d), 4, Date::new(2024, 6, 15).unwrap()));
         assert!(!is_old(Some(d), 4, today));
         assert!(!is_old(None, 1, today));
+        assert!(
+            !is_old(Date::new(1968, 7, 18), 3, today),
+            "Intel placeholder date"
+        );
         assert_eq!(Date::new(2030, 1, 1).unwrap().years_until(today), 0);
     }
 }
