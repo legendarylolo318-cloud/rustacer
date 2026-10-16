@@ -33,9 +33,23 @@ Stacer is GPL-3.0; Rustacer is MIT.
 | Processes | Sortable table with search. You can end a process or a whole process tree, or open its file location. Critical system processes cannot be ended |
 | Uninstaller | Apps from the HKLM, 32-bit HKLM and HKCU Uninstall keys, with duplicates removed. Runs the app's own uninstaller or its quiet uninstaller. System components and updates are hidden by default. Optionally lists winget apps and uninstalls them by winget id |
 | Resources | Graphs over the last 60 s, 5 min or 30 min for per-core CPU, RAM, swap/pagefile, disk read/write and network |
-| Settings | 7 themes (Dark, Light, Midnight, Nord, Dracula, Solarized Dark, Forest), refresh interval, alert thresholds for CPU, RAM and disk (shown as a Windows toast at most once every 5 minutes per alert), the "old driver" age, check for driver updates on startup, start with Windows |
+| Settings | 8 themes (Dark, Light, Midnight, Nord, Dracula, Solarized Dark, Forest, High contrast), accessibility options (below), refresh interval, alert thresholds for CPU, RAM and disk (shown as a Windows toast at most once every 5 minutes per alert), the "old driver" age, check for driver updates on startup, start with Windows |
 
 Sizes are shown in binary units (KiB, MiB, GiB). The UI strings come from a string table that is ready for translation; only English exists today.
+
+## Accessibility
+
+- **Screen readers:** Narrator and NVDA are supported through AccessKit. The dashboard gauges, which are drawn shapes, are announced with their value (for example "CPU: 6 percent").
+- **Text and control size:** 75% to 200% in Settings. Ctrl+= / Ctrl+- / Ctrl+0 work anywhere and are remembered.
+- **High contrast theme:** black, white and yellow, aimed at WCAG AAA text contrast. All accent buttons are tested for at least 4.5:1 contrast on every theme.
+- **Reduce motion:** turns off animations and smooth scrolling.
+- **Keyboard:** Tab / Shift+Tab move focus, which has a 2 px outline. Ctrl+1 to Ctrl+9 jump to pages, F11 toggles fullscreen and Esc leaves it. The full list is under Settings > Keyboard shortcuts.
+- **Small windows and large text:** tables shorten text with "…" instead of wrapping, the sidebar scrolls when it doesn't fit, and Settings scrolls.
+
+## Window
+
+- Tables and graphs resize with the window, including when it is maximized or fullscreen.
+- Window size, position and maximized state are remembered between launches (eframe stores them in `%APPDATA%\Rustacer\data`).
 
 ## Driver updater
 
@@ -86,6 +100,8 @@ cargo build --release
 The output is `target/release/rustacer.exe`.
 `rustacer.exe --smoke-test` shows every page and driver tab for 2.5 s each and then exits; a panic gives a non-zero exit code.
 `rustacer.exe --screenshots <dir>` saves a PNG of a fixed tour of pages. It only triggers read-only actions (a cleaner scan and a Windows Update search).
+`rustacer.exe --resize-test <dir>` captures pages at the minimum size, a large size, maximized, fullscreen and restored, plus high-contrast and 150%-scale views, and logs the window and screen sizes.
+None of these test modes save window or UI state to your profile.
 The read-only live tests run with `cargo test -p rustacer-core --test live_readonly -- --ignored --nocapture`. They list services, drivers, apps and startup entries, scan cleaner sizes, and run a Windows Update driver search. They never change anything.
 
 Files:

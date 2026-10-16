@@ -3,6 +3,23 @@
 All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/).
 
+## [0.2.1] - 2026-10-16
+
+### Fixed
+- Tables kept the column widths from their first layout, so when maximized or fullscreen they used only part of the window, and at small sizes columns were squeezed or text wrapped. Columns now re-fit on every resize and shorten text with "…".
+- Resources graphs had a fixed height; they now share the window height.
+- The sidebar and the admin banner were cut off in small windows or at large text sizes; the sidebar now scrolls and the banner stacks.
+- The window's size, position and maximized state were not remembered between launches.
+
+### Added
+- F11 toggles fullscreen; Esc leaves it.
+- Accessibility:
+  - Text and control size setting (75% to 200%; Ctrl+= / Ctrl+- / Ctrl+0 are remembered).
+  - High contrast theme and a "Reduce motion" option.
+  - Ctrl+1 to Ctrl+9 page shortcuts, a clearer keyboard focus outline, and a shortcuts list in Settings.
+  - Screen-reader labels for the dashboard gauges.
+- `--resize-test <dir>` capture mode for layout checks.
+
 ## [0.2.0] - 2026-10-16
 
 ### Added
