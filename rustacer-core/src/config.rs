@@ -13,10 +13,11 @@ pub enum Theme {
     Dracula,
     Solarized,
     Forest,
+    HighContrast,
 }
 
 impl Theme {
-    pub const ALL: [Theme; 7] = [
+    pub const ALL: [Theme; 8] = [
         Theme::Dark,
         Theme::Light,
         Theme::Midnight,
@@ -24,6 +25,7 @@ impl Theme {
         Theme::Dracula,
         Theme::Solarized,
         Theme::Forest,
+        Theme::HighContrast,
     ];
 
     pub fn label(self) -> &'static str {
@@ -35,6 +37,7 @@ impl Theme {
             Theme::Dracula => "Dracula",
             Theme::Solarized => "Solarized Dark",
             Theme::Forest => "Forest",
+            Theme::HighContrast => "High contrast",
         }
     }
 }
@@ -52,6 +55,10 @@ pub struct Config {
     pub check_drivers_on_startup: bool,
     pub start_with_windows: bool,
     pub hide_inbox_drivers: bool,
+    /// UI scale (text and controls), 0.75 ..= 2.0.
+    pub ui_scale: f32,
+    /// Turn off animations.
+    pub reduce_motion: bool,
 }
 
 impl Default for Config {
@@ -67,6 +74,8 @@ impl Default for Config {
             check_drivers_on_startup: false,
             start_with_windows: false,
             hide_inbox_drivers: true,
+            ui_scale: 1.0,
+            reduce_motion: false,
         }
     }
 }
@@ -79,6 +88,11 @@ impl Config {
         self.ram_alert_percent = self.ram_alert_percent.clamp(1.0, 100.0);
         self.disk_alert_percent = self.disk_alert_percent.clamp(1.0, 100.0);
         self.old_driver_years = self.old_driver_years.clamp(1, 30);
+        self.ui_scale = if self.ui_scale.is_finite() {
+            self.ui_scale.clamp(0.75, 2.0)
+        } else {
+            1.0
+        };
         self
     }
 
@@ -160,6 +174,16 @@ mod tests {
             assert_eq!(Config::from_toml(&c.to_toml().unwrap()).unwrap().theme, t);
         }
         assert!(Config::from_toml("theme = 'not-a-theme'").is_err());
+    }
+
+    #[test]
+    fn accessibility_settings_clamp() {
+        let c = Config::from_toml("ui_scale = 9.0\nreduce_motion = true\ntheme = \"highcontrast\"")
+            .unwrap();
+        assert_eq!(c.ui_scale, 2.0);
+        assert!(c.reduce_motion);
+        assert_eq!(c.theme, Theme::HighContrast);
+        assert_eq!(Config::from_toml("ui_scale = 0.1").unwrap().ui_scale, 0.75);
     }
 
     #[test]
