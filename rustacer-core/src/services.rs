@@ -346,7 +346,7 @@ pub fn query_state(name: &str) -> Result<ServiceState> {
     Ok(state_from(st.dwCurrentState))
 }
 
-pub fn start_service(name: &str) -> Result<()> {
+pub(crate) fn start_service(name: &str) -> Result<()> {
     let scm = open_scm(SC_MANAGER_CONNECT)?;
     let svc = open_service(&scm, name, SERVICE_START | SERVICE_QUERY_STATUS)?;
     // SAFETY: no arguments passed.
@@ -369,7 +369,7 @@ fn wait_for(name: &str, want: ServiceState, timeout_s: u64) -> Result<()> {
     )))
 }
 
-pub fn stop_and_wait(name: &str, timeout_s: u64) -> Result<()> {
+pub(crate) fn stop_and_wait(name: &str, timeout_s: u64) -> Result<()> {
     let scm = open_scm(SC_MANAGER_CONNECT)?;
     let svc = open_service(&scm, name, SERVICE_STOP | SERVICE_QUERY_STATUS)?;
     let mut st = SERVICE_STATUS::default();
@@ -379,7 +379,7 @@ pub fn stop_and_wait(name: &str, timeout_s: u64) -> Result<()> {
     wait_for(name, ServiceState::Stopped, timeout_s)
 }
 
-pub fn set_start_type(name: &str, t: StartType) -> Result<()> {
+fn set_start_type(name: &str, t: StartType) -> Result<()> {
     let scm = open_scm(SC_MANAGER_CONNECT)?;
     let svc = open_service(&scm, name, SERVICE_CHANGE_CONFIG)?;
     let raw = match t {
