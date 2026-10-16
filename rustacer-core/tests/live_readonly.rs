@@ -59,6 +59,9 @@ fn windows_update_search_only() {
         Ok(mut v) => {
             let installed = drivers::installed::list_installed().unwrap();
             drivers::wua::fill_current(&mut v, &installed);
+            for t in drivers::wua::drop_gpu_updates(&mut v, &installed) {
+                println!("  [GPU, left out] {t}");
+            }
             println!("{} updates offered", v.len());
             for u in v {
                 println!(

@@ -73,7 +73,8 @@ pub enum Msg {
     CleanDone(CleanReport),
     DriversInstalled(Vec<InstalledDriver>),
     UpdateProgress(Progress),
-    UpdatesFound(Result<Vec<DriverUpdate>, String>),
+    /// (offered non-GPU updates, titles of GPU updates that were left out)
+    UpdatesFound(Result<(Vec<DriverUpdate>, Vec<String>), String>),
     InstallProgress(Progress),
     RestorePoint(RestoreOutcome),
     InstallDone(Result<InstallSummary, String>),
@@ -188,6 +189,7 @@ pub struct DriversState {
     pub only_old: bool,
     pub updates: Vec<(DriverUpdate, bool)>,
     pub show_all_updates: bool,
+    pub gpu_skipped: Vec<String>,
     pub scanning: bool,
     pub scanned_once: bool,
     pub scan_progress: Option<Progress>,
@@ -439,8 +441,9 @@ impl App {
                     self.drivers.scan_progress = None;
                     self.drivers.scanned_once = true;
                     match r {
-                        Ok(v) => {
+                        Ok((v, gpu)) => {
                             let n = v.len();
+                            self.drivers.gpu_skipped = gpu;
                             self.drivers.updates = v.into_iter().map(|u| (u, false)).collect();
                             self.notify(
                                 false,
@@ -600,7 +603,8 @@ impl App {
             bus.send(Msg::UpdatesFound(match r {
                 Ok(mut v) => {
                     wua::fill_current(&mut v, &installed);
-                    Ok(v)
+                    let gpu = wua::drop_gpu_updates(&mut v, &installed);
+                    Ok((v, gpu))
                 }
                 Err(e) => Err(e.to_string()),
             }));

@@ -121,6 +121,36 @@ pub fn match_installed<'a>(
     }
 }
 
+/// GPU (display) drivers are never offered or installed through Rustacer: they are large,
+/// tightly coupled to vendor tooling, and a bad one can leave the machine without a usable
+/// display. Users get the vendor's official page instead (Driver Updater > GPU).
+pub fn is_gpu_update(u: &DriverUpdate, installed: &[InstalledDriver]) -> bool {
+    let class = u.driver_class.trim().to_ascii_lowercase();
+    let title = u.title.to_ascii_lowercase();
+    class == "display"
+        || title.contains("display driver")
+        || title.contains("- display -")
+        || match_installed(u, installed)
+            .is_some_and(|d| d.device_class.eq_ignore_ascii_case("DISPLAY"))
+}
+
+/// Remove GPU updates; returns the titles that were dropped.
+pub fn drop_gpu_updates(
+    updates: &mut Vec<DriverUpdate>,
+    installed: &[InstalledDriver],
+) -> Vec<String> {
+    let mut dropped = Vec::new();
+    updates.retain(|u| {
+        if is_gpu_update(u, installed) {
+            dropped.push(u.title.clone());
+            false
+        } else {
+            true
+        }
+    });
+    dropped
+}
+
 pub fn fill_current(updates: &mut [DriverUpdate], installed: &[InstalledDriver]) {
     for u in updates {
         if let Some(d) = match_installed(u, installed) {
@@ -388,6 +418,12 @@ pub fn install_updates(
                 continue;
             }
             let title = u.Title()?.to_string();
+            // Defence in depth: refuse GPU drivers even if their id was passed in.
+            if parse_update(u).is_ok_and(|d| is_gpu_update(&d, &[])) {
+                return Err(CoreError::Blocked(format!(
+                    "'{title}' is a GPU driver. Rustacer does not install GPU drivers; use the vendor's official page."
+                )));
+            }
             if !u.EulaAccepted()?.as_bool() {
                 return Err(CoreError::Message(format!(
                     "'{title}' requires accepting a license agreement. Install it from Windows Settings > Windows Update."
@@ -626,6 +662,36 @@ mod tests {
             UpdateStatus::Newer
         );
         assert_eq!(status(&mk("", "1.0")), UpdateStatus::Unknown);
+    }
+
+    #[test]
+    fn gpu_updates_are_dropped() {
+        let amd = DriverUpdate {
+            title: "Advanced Micro Devices, Inc. Display Driver Update (32.0.31044.16)".into(),
+            ..Default::default()
+        };
+        let by_class = DriverUpdate {
+            title: "NVIDIA - something".into(),
+            driver_class: "Display".into(),
+            ..Default::default()
+        };
+        let by_device = DriverUpdate {
+            title: "Intel Corporation - 31.0".into(),
+            hardware_id: "PCI\\VEN_8086&DEV_7D67".into(),
+            ..Default::default()
+        };
+        let npu = DriverUpdate {
+            title: "Intel Corporation - ComputeAccelerator - 32.0.100.3053".into(),
+            driver_class: "ComputeAccelerator".into(),
+            ..Default::default()
+        };
+        let mut gpu_dev = inst("PCI\\VEN_8086&DEV_7D67", "31.0");
+        gpu_dev.device_class = "DISPLAY".into();
+        let mut v = vec![amd, by_class, by_device, npu];
+        let dropped = drop_gpu_updates(&mut v, &[gpu_dev]);
+        assert_eq!(dropped.len(), 3);
+        assert_eq!(v.len(), 1);
+        assert!(v[0].title.contains("ComputeAccelerator"));
     }
 
     #[test]

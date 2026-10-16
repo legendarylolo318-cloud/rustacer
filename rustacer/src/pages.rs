@@ -631,9 +631,32 @@ fn drivers_updates(app: &mut App, ui: &mut Ui) {
         }
         ui.separator();
     }
+    if !app.drivers.gpu_skipped.is_empty() && !app.drivers.scanning {
+        let n = app.drivers.gpu_skipped.len();
+        let list = app.drivers.gpu_skipped.join("\n");
+        let mut open_gpu_tab = false;
+        ui.horizontal(|ui| {
+            ui.label(
+                RichText::new(format!(
+                    "{n} GPU driver offer(s) left out. Rustacer never installs GPU drivers."
+                ))
+                .weak(),
+            )
+            .on_hover_text(list);
+            if ui
+                .link("Open the GPU tab for official vendor pages")
+                .clicked()
+            {
+                open_gpu_tab = true;
+            }
+        });
+        if open_gpu_tab {
+            app.drivers.tab = DriverTab::Gpu;
+        }
+    }
     if app.drivers.updates.is_empty() {
         if app.drivers.scanned_once && !app.drivers.scanning {
-            ui.label("No driver updates are offered by Windows Update.");
+            ui.label("No non-GPU driver updates are offered by Windows Update.");
         }
         return;
     }
