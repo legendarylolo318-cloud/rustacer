@@ -109,8 +109,32 @@ pub fn list_installed() -> Vec<AppEntry> {
         &mut out,
     );
     read_hive(RegKey::predef(HKEY_CURRENT_USER), P, "HKCU", &mut out);
-    out.sort_by_key(|a| a.name.to_lowercase());
-    out
+    dedupe(out)
+}
+
+/// The same product can be registered in several hives (per-user and machine, or the
+/// 32- and 64-bit views). Keep one row per name+version+publisher, preferring the entry
+/// that has an uninstall command.
+pub fn dedupe(mut v: Vec<AppEntry>) -> Vec<AppEntry> {
+    v.sort_by(|a, b| {
+        a.name
+            .to_lowercase()
+            .cmp(&b.name.to_lowercase())
+            .then_with(|| {
+                a.uninstall_string
+                    .is_empty()
+                    .cmp(&b.uninstall_string.is_empty())
+            })
+    });
+    let mut seen = std::collections::HashSet::new();
+    v.retain(|a| {
+        seen.insert((
+            a.name.to_lowercase(),
+            a.version.to_lowercase(),
+            a.publisher.to_lowercase(),
+        ))
+    });
+    v
 }
 
 /// Launch the uninstaller. ShellExecute lets the installer request UAC itself.
@@ -258,6 +282,35 @@ mod tests {
         assert!(parse_entry("KB123", &u, "HKLM").unwrap().is_update);
         let s = raw(&[("DisplayName", "Runtime")], &[("SystemComponent", 1)]);
         assert!(parse_entry("rt", &s, "HKLM").unwrap().is_system_component);
+    }
+
+    #[test]
+    fn dedupes_across_hives() {
+        let mk = |src: &str, cmd: &str| AppEntry {
+            name: "App".into(),
+            version: "1.0".into(),
+            publisher: "Pub".into(),
+            uninstall_string: cmd.into(),
+            source: src.into(),
+            ..Default::default()
+        };
+        let other = AppEntry {
+            name: "App".into(),
+            version: "2.0".into(),
+            ..Default::default()
+        };
+        let v = dedupe(vec![
+            mk("HKCU", ""),
+            mk("HKLM", "u.exe"),
+            mk("HKLM (32-bit)", "u.exe"),
+            other,
+        ]);
+        assert_eq!(v.len(), 2);
+        let one = v.iter().find(|a| a.version == "1.0").unwrap();
+        assert_eq!(
+            one.uninstall_string, "u.exe",
+            "keeps the entry that can uninstall"
+        );
     }
 
     #[test]
