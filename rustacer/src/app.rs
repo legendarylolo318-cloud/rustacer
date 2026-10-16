@@ -1,4 +1,4 @@
-﻿use eframe::egui::{self, Color32, Context};
+use eframe::egui::{self, Color32, Context};
 use rustacer_core::cleaner::{self, Category, CleanReport, ScanResult};
 use rustacer_core::config::{Config, Theme};
 use rustacer_core::drivers::backup::{self, BackupResult};
@@ -68,6 +68,7 @@ pub enum Msg {
     Procs(Vec<ProcessInfo>),
     Apps(Vec<AppEntry>),
     Winget(Vec<WingetApp>),
+    WingetAvailable(bool),
     CleanScan(Vec<ScanResult>),
     CleanDone(CleanReport),
     DriversInstalled(Vec<InstalledDriver>),
@@ -230,6 +231,7 @@ pub struct UninstState {
     pub hide_system: bool,
     pub selected: Option<usize>,
     pub winget_ok: Option<bool>,
+    pub winget_probed: bool,
     pub winget: Vec<WingetApp>,
     pub show_winget: bool,
     pub winget_selected: Option<usize>,
@@ -391,6 +393,7 @@ impl App {
                     self.uninst.loaded = true;
                 }
                 Msg::Winget(v) => self.uninst.winget = v,
+                Msg::WingetAvailable(ok) => self.uninst.winget_ok = Some(ok),
                 Msg::CleanScan(v) => {
                     self.cleaner.results = v
                         .into_iter()
@@ -476,7 +479,7 @@ impl App {
             self.history.pop_front();
         }
         if self.cfg.alerts_enabled {
-            for msg in metrics::exceeded_alerts(
+            for (key, msg) in metrics::exceeded_alerts(
                 &s,
                 self.cfg.cpu_alert_percent,
                 self.cfg.ram_alert_percent,
@@ -484,10 +487,10 @@ impl App {
             ) {
                 let due = self
                     .alert_times
-                    .get(&msg)
+                    .get(&key)
                     .is_none_or(|t| t.elapsed() > Duration::from_secs(300));
                 if due {
-                    self.alert_times.insert(msg.clone(), Instant::now());
+                    self.alert_times.insert(key, Instant::now());
                     toast("Rustacer alert", &msg);
                 }
             }
@@ -739,9 +742,11 @@ impl App {
     }
 
     pub fn open_vendor(&mut self, v: GpuVendor) {
-        if let Err(e) = rustacer_core::drivers::gpu::open_official_page(v) {
-            self.notify(true, e.to_string());
-        }
+        self.spawn(move |bus| {
+            if let Err(e) = rustacer_core::drivers::gpu::open_official_page(v) {
+                bus.err(e.to_string());
+            }
+        });
     }
 
     // ---------- confirmation dialog ----------
@@ -879,4 +884,3 @@ impl eframe::App for App {
         ctx.request_repaint_after(Duration::from_millis(500));
     }
 }
-

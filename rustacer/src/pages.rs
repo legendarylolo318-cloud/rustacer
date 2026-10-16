@@ -1071,9 +1071,11 @@ fn processes(app: &mut App, ui: &mut Ui) {
             }
             if ui.button("Open file location").clicked() {
                 if let Some(path) = sel.as_ref().and_then(|p| p.path.clone()) {
-                    if let Err(e) = reveal_in_explorer(&path) {
-                        app.notify(true, e.to_string());
-                    }
+                    app.spawn(move |bus| {
+                        if let Err(e) = reveal_in_explorer(&path) {
+                            bus.err(e.to_string());
+                        }
+                    });
                 }
             }
         });
@@ -1196,8 +1198,13 @@ fn uninstaller(app: &mut App, ui: &mut Ui) {
             ui.spinner();
         }
     });
-    if app.uninst.winget_ok.is_none() {
-        app.uninst.winget_ok = Some(rustacer_core::uninstaller::winget_available());
+    if !app.uninst.winget_probed {
+        app.uninst.winget_probed = true;
+        app.spawn(|bus| {
+            bus.send(Msg::WingetAvailable(
+                rustacer_core::uninstaller::winget_available(),
+            ))
+        });
     }
     if app.uninst.winget_ok == Some(true) {
         let mut want = app.uninst.show_winget;
@@ -1565,7 +1572,11 @@ fn settings(app: &mut App, ui: &mut Ui) {
     ui.horizontal(|ui| {
         if let Some(d) = rustacer_core::config::log_dir() {
             if ui.button("Open log folder").clicked() {
-                let _ = open_path(&d.to_string_lossy());
+                app.spawn(move |bus| {
+                    if let Err(e) = open_path(&d.to_string_lossy()) {
+                        bus.err(e.to_string());
+                    }
+                });
             }
         }
     });

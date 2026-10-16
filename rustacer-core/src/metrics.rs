@@ -188,21 +188,24 @@ pub fn format_uptime(secs: u64) -> String {
     }
 }
 
-/// Which alert thresholds are exceeded for a snapshot.
-pub fn exceeded_alerts(s: &Snapshot, cpu: f32, ram: f32, disk: f32) -> Vec<String> {
+/// Which alert thresholds are exceeded for a snapshot, as (stable key, message).
+/// The key is used for the cooldown, so a value moving from 93% to 94% is the same alert.
+pub fn exceeded_alerts(s: &Snapshot, cpu: f32, ram: f32, disk: f32) -> Vec<(String, String)> {
     let mut v = Vec::new();
     if s.cpu_total >= cpu {
-        v.push(format!("CPU usage is at {:.0}%", s.cpu_total));
+        v.push(("cpu".into(), format!("CPU usage is at {:.0}%", s.cpu_total)));
     }
     if s.ram_percent() >= ram {
-        v.push(format!("Memory usage is at {:.0}%", s.ram_percent()));
+        v.push((
+            "ram".into(),
+            format!("Memory usage is at {:.0}%", s.ram_percent()),
+        ));
     }
     for d in &s.disks {
         if d.used_percent() >= disk {
-            v.push(format!(
-                "Drive {} is {:.0}% full",
-                d.mount,
-                d.used_percent()
+            v.push((
+                format!("disk:{}", d.mount),
+                format!("Drive {} is {:.0}% full", d.mount, d.used_percent()),
             ));
         }
     }
@@ -241,6 +244,14 @@ mod tests {
         };
         let a = exceeded_alerts(&s, 90.0, 90.0, 95.0);
         assert_eq!(a.len(), 2);
+        assert_eq!(a[0].0, "cpu");
+        let mut s2 = s.clone();
+        s2.cpu_total = 96.0;
+        assert_eq!(
+            exceeded_alerts(&s2, 90.0, 90.0, 95.0)[0].0,
+            a[0].0,
+            "key is stable"
+        );
         assert!(exceeded_alerts(&s, 99.0, 99.0, 99.0).is_empty());
     }
 }
