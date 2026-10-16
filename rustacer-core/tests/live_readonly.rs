@@ -56,10 +56,15 @@ fn windows_update_search_only() {
     let cancel = AtomicBool::new(false);
     let r = drivers::wua::search_driver_updates(&cancel, &mut |p| println!("{}", p.stage));
     match r {
-        Ok(v) => {
+        Ok(mut v) => {
+            let installed = drivers::installed::list_installed().unwrap();
+            drivers::wua::fill_current(&mut v, &installed);
             println!("{} updates offered", v.len());
             for u in v {
-                println!("  {} [{}]", u.title, u.new_version);
+                println!(
+                    "  {} | hw={} | device={} | current={} -> new={}",
+                    u.title, u.hardware_id, u.device_name, u.current_version, u.new_version
+                );
             }
         }
         Err(e) => panic!("search failed: {e}"),

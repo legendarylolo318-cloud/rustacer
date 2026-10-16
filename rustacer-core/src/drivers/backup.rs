@@ -1,4 +1,4 @@
-﻿//! Export third-party drivers with `pnputil /export-driver * <folder>` (admin).
+//! Export third-party drivers with `pnputil /export-driver * <folder>` (admin).
 
 use crate::admin::require_admin;
 use crate::error::{CoreError, Result};
@@ -106,7 +106,10 @@ pub fn backup_drivers(dest: &Path, mut progress: impl FnMut(&str)) -> Result<Bac
         res.exported = n;
     }
     res.exit_code = status.code().unwrap_or(-1);
-    info!("pnputil exited {} ({} packages)", res.exit_code, res.exported);
+    info!(
+        "pnputil exited {} ({} packages)",
+        res.exit_code, res.exported
+    );
     if res.exit_code != 0 && res.exported == 0 {
         return Err(CoreError::Message(format!(
             "pnputil failed with exit code {}.",
@@ -142,4 +145,3 @@ mod tests {
         assert!(!is_export_line("Exporting driver package: oem1.inf"));
     }
 }
-

@@ -40,6 +40,9 @@ pub fn hresult_message(hr: i32, os_message: &str) -> String {
         0x8007_0002 => Some("File or item not found"),
         0x8007_0057 => Some("Invalid parameter"),
         0x8007_05B4 => Some("The operation timed out"),
+        0x8007_0422 => {
+            Some("The Windows Update service is disabled - enable it in Services to scan")
+        }
         0x8024_0004 => Some("Windows Update: no network or service unavailable"),
         0x8024_001E => Some("Windows Update: service is shutting down"),
         0x8024_402C => {

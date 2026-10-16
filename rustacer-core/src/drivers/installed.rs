@@ -4,6 +4,7 @@ use super::version::{is_old, Date};
 use crate::error::Result;
 use crate::util::ComGuard;
 use serde::Deserialize;
+use std::collections::HashMap;
 
 #[derive(Deserialize, Debug)]
 #[serde(rename = "Win32_PnPSignedDriver")]
@@ -19,6 +20,19 @@ struct RawDriver {
     is_signed: Option<bool>,
     #[serde(rename = "HardWareID")]
     hardware_id: Option<String>,
+    #[serde(rename = "DeviceID")]
+    device_id: Option<String>,
+}
+
+#[derive(Deserialize, Debug)]
+#[serde(rename = "Win32_PnPEntity")]
+struct RawEntity {
+    #[serde(rename = "DeviceID")]
+    device_id: Option<String>,
+    #[serde(rename = "HardwareID")]
+    hardware_id: Option<Vec<String>>,
+    #[serde(rename = "CompatibleID")]
+    compatible_id: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -31,7 +45,8 @@ pub struct InstalledDriver {
     pub date: Option<Date>,
     pub inf_name: String,
     pub signed: Option<bool>,
-    pub hardware_id: String,
+    /// All hardware and compatible IDs of the device, most specific first.
+    pub hardware_ids: Vec<String>,
 }
 
 impl InstalledDriver {
@@ -57,7 +72,11 @@ fn convert(r: RawDriver) -> InstalledDriver {
         date: r.driver_date.as_deref().and_then(Date::parse_cim),
         inf_name: r.inf_name.unwrap_or_default(),
         signed: r.is_signed,
-        hardware_id: r.hardware_id.unwrap_or_default(),
+        hardware_ids: r
+            .hardware_id
+            .into_iter()
+            .filter(|h| !h.is_empty())
+            .collect(),
     }
 }
 
@@ -65,9 +84,32 @@ pub fn list_installed() -> Result<Vec<InstalledDriver>> {
     let _com = ComGuard::new()?;
     let con = wmi::WMIConnection::new()?;
     let raw: Vec<RawDriver> = con.query()?;
+    // Full ID lists live on Win32_PnPEntity; join them by device instance id.
+    let entities: Vec<RawEntity> = con.query().unwrap_or_default();
+    let mut ids: HashMap<String, Vec<String>> = HashMap::new();
+    for e in entities {
+        if let Some(id) = e.device_id {
+            let mut all = e.hardware_id.unwrap_or_default();
+            all.extend(e.compatible_id.unwrap_or_default());
+            ids.insert(id.to_ascii_uppercase(), all);
+        }
+    }
     let mut v: Vec<InstalledDriver> = raw
         .into_iter()
-        .map(convert)
+        .map(|r| {
+            let extra = r
+                .device_id
+                .as_ref()
+                .and_then(|d| ids.get(&d.to_ascii_uppercase()).cloned())
+                .unwrap_or_default();
+            let mut d = convert(r);
+            for id in extra {
+                if !d.hardware_ids.iter().any(|x| x.eq_ignore_ascii_case(&id)) {
+                    d.hardware_ids.push(id);
+                }
+            }
+            d
+        })
         .filter(|d| !d.device_name.is_empty())
         .collect();
     v.sort_by_key(|d| d.device_name.to_lowercase());
@@ -123,6 +165,7 @@ mod tests {
             inf_name: Some("oem5.inf".into()),
             is_signed: Some(true),
             hardware_id: None,
+            device_id: None,
         };
         let c = convert(r);
         assert_eq!(c.date, Date::new(2024, 1, 2));

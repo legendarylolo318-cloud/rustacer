@@ -15,7 +15,7 @@ use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_INPROC_SERVER};
 use windows::Win32::System::UpdateAgent::*;
 use windows::Win32::System::Variant::VARIANT;
 
-pub const SEARCH_CRITERIA: &str = "IsInstalled=0 and Type='Driver'";
+pub const SEARCH_CRITERIA: &str = "IsInstalled=0 and IsHidden=0 and Type='Driver'";
 
 #[derive(Debug, Clone, Default)]
 pub struct DriverUpdate {
@@ -93,21 +93,32 @@ fn norm(s: &str) -> String {
     s.trim().to_ascii_lowercase()
 }
 
-/// Match an update to an installed device by hardware id (the installed side may
-/// list several ids separated by commas/semicolons/newlines).
+/// Match an update to an installed device: first by any of the device's hardware or
+/// compatible IDs, then by device name (WUA's DriverModel is usually the friendly name).
 pub fn match_installed<'a>(
     u: &DriverUpdate,
     installed: &'a [InstalledDriver],
 ) -> Option<&'a InstalledDriver> {
     let want = norm(&u.hardware_id);
-    if want.is_empty() {
+    if !want.is_empty() {
+        if let Some(d) = installed
+            .iter()
+            .find(|d| d.hardware_ids.iter().any(|id| norm(id) == want))
+        {
+            return Some(d);
+        }
+    }
+    let model = norm(&u.device_name);
+    if model.is_empty() {
         return None;
     }
-    installed.iter().find(|d| {
-        let ids = norm(&d.hardware_id);
-        ids.split([',', ';', '\n'])
-            .any(|id| !id.trim().is_empty() && id.trim() == want)
-    })
+    let mut by_name = installed.iter().filter(|d| norm(&d.device_name) == model);
+    let first = by_name.next()?;
+    // Ambiguous names (several identical devices with different drivers) are not guessed.
+    match by_name.next() {
+        Some(second) if second.version != first.version => None,
+        _ => Some(first),
+    }
 }
 
 pub fn fill_current(updates: &mut [DriverUpdate], installed: &[InstalledDriver]) {
@@ -119,6 +130,36 @@ pub fn fill_current(updates: &mut [DriverUpdate], installed: &[InstalledDriver])
                 u.device_name = d.device_name.clone();
             }
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UpdateStatus {
+    Newer,
+    Same,
+    /// Windows Update sometimes offers a lower version than what is installed.
+    Older,
+    /// No installed device matched, or a version could not be parsed.
+    Unknown,
+}
+
+impl UpdateStatus {
+    pub fn label(self) -> &'static str {
+        match self {
+            UpdateStatus::Newer => "Newer",
+            UpdateStatus::Same => "Same version",
+            UpdateStatus::Older => "Older (downgrade)",
+            UpdateStatus::Unknown => "Unknown",
+        }
+    }
+}
+
+pub fn status(u: &DriverUpdate) -> UpdateStatus {
+    match super::version::compare_versions(&u.new_version, &u.current_version) {
+        Some(std::cmp::Ordering::Greater) => UpdateStatus::Newer,
+        Some(std::cmp::Ordering::Equal) => UpdateStatus::Same,
+        Some(std::cmp::Ordering::Less) => UpdateStatus::Older,
+        None => UpdateStatus::Unknown,
     }
 }
 
@@ -509,7 +550,11 @@ mod tests {
     fn inst(hw: &str, ver: &str) -> InstalledDriver {
         InstalledDriver {
             device_name: "Dev".into(),
-            hardware_id: hw.into(),
+            hardware_ids: hw
+                .split(';')
+                .filter(|x| !x.is_empty())
+                .map(String::from)
+                .collect(),
             version: ver.into(),
             ..Default::default()
         }
@@ -532,6 +577,58 @@ mod tests {
     }
 
     #[test]
+    fn matches_secondary_hardware_id() {
+        let list = [inst(
+            "PCI\\VEN_8086&DEV_7D67&SUBSYS_1;PCI\\VEN_8086&DEV_7D67",
+            "31.0",
+        )];
+        let u = DriverUpdate {
+            hardware_id: "PCI\\VEN_8086&DEV_7D67".into(),
+            ..Default::default()
+        };
+        assert!(match_installed(&u, &list).is_some());
+    }
+
+    #[test]
+    fn name_fallback_refuses_ambiguity() {
+        let mut a = inst("", "1.0");
+        a.device_name = "Intel(R) Graphics".into();
+        let mut b = a.clone();
+        b.version = "2.0".into();
+        let u = DriverUpdate {
+            device_name: "intel(r) graphics".into(),
+            ..Default::default()
+        };
+        assert_eq!(
+            match_installed(&u, std::slice::from_ref(&a)).map(|d| d.version.as_str()),
+            Some("1.0")
+        );
+        assert!(match_installed(&u, &[a, b]).is_none());
+    }
+
+    #[test]
+    fn status_flags_downgrades() {
+        let mk = |cur: &str, new: &str| DriverUpdate {
+            current_version: cur.into(),
+            new_version: new.into(),
+            ..Default::default()
+        };
+        assert_eq!(
+            status(&mk("32.0.100.4404", "32.0.100.3053")),
+            UpdateStatus::Older
+        );
+        assert_eq!(
+            status(&mk("32.0.101.8331", "32.0.101.8331")),
+            UpdateStatus::Same
+        );
+        assert_eq!(
+            status(&mk("32.0.31041.1004", "32.0.31044.16")),
+            UpdateStatus::Newer
+        );
+        assert_eq!(status(&mk("", "1.0")), UpdateStatus::Unknown);
+    }
+
+    #[test]
     fn no_match_without_ids() {
         let u = DriverUpdate::default();
         assert!(match_installed(&u, &[inst("", "1")]).is_none());
@@ -547,6 +644,7 @@ mod tests {
 
     #[test]
     fn search_criteria_is_driver_only() {
-        assert_eq!(SEARCH_CRITERIA, "IsInstalled=0 and Type='Driver'");
+        assert!(SEARCH_CRITERIA.contains("Type='Driver'"));
+        assert!(SEARCH_CRITERIA.contains("IsInstalled=0"));
     }
 }
