@@ -3009,6 +3009,7 @@ dependencies = [
  "toml",
  "tracing",
  "windows 0.62.2",
+ "windows-core",
  "winreg",
  "wmi",
 ]

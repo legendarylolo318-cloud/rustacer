@@ -10,7 +10,7 @@ use crate::util::ComGuard;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 use tracing::{info, warn};
-use windows::core::{Interface, BSTR};
+use windows::core::{implement, Interface, Ref, BSTR};
 use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_INPROC_SERVER};
 use windows::Win32::System::UpdateAgent::*;
 use windows::Win32::System::Variant::VARIANT;
@@ -136,6 +136,50 @@ fn session() -> Result<IUpdateSession> {
     Ok(unsafe { CoCreateInstance(&UpdateSession, None, CLSCTX_INPROC_SERVER)? })
 }
 
+// WUA rejects null completion callbacks; we poll, so these do nothing.
+#[implement(ISearchCompletedCallback)]
+struct SearchCb;
+impl ISearchCompletedCallback_Impl for SearchCb_Impl {
+    fn Invoke(
+        &self,
+        _: Ref<ISearchJob>,
+        _: Ref<ISearchCompletedCallbackArgs>,
+    ) -> windows::core::Result<()> {
+        Ok(())
+    }
+}
+
+#[implement(IDownloadCompletedCallback)]
+struct DownloadCb;
+impl IDownloadCompletedCallback_Impl for DownloadCb_Impl {
+    fn Invoke(
+        &self,
+        _: Ref<IDownloadJob>,
+        _: Ref<IDownloadCompletedCallbackArgs>,
+    ) -> windows::core::Result<()> {
+        Ok(())
+    }
+}
+
+#[implement(IInstallationCompletedCallback)]
+struct InstallCb;
+impl IInstallationCompletedCallback_Impl for InstallCb_Impl {
+    fn Invoke(
+        &self,
+        _: Ref<IInstallationJob>,
+        _: Ref<IInstallationCompletedCallbackArgs>,
+    ) -> windows::core::Result<()> {
+        Ok(())
+    }
+}
+
+fn step(name: &str, e: windows::core::Error) -> CoreError {
+    CoreError::Windows(format!(
+        "{name}: {}",
+        hresult_message(e.code().0, &e.message())
+    ))
+}
+
 fn check_cancel(cancel: &AtomicBool) -> Result<()> {
     if cancel.load(Ordering::Relaxed) {
         Err(CoreError::Cancelled)
@@ -189,9 +233,17 @@ fn search(
 ) -> Result<Vec<IUpdate>> {
     // SAFETY: COM calls on live interfaces; the job is polled until completion.
     unsafe {
-        let searcher = session.CreateUpdateSearcher()?;
+        let searcher = session
+            .CreateUpdateSearcher()
+            .map_err(|e| step("CreateUpdateSearcher", e))?;
         let _ = searcher.SetOnline(true.into());
-        let job = searcher.BeginSearch(&BSTR::from(SEARCH_CRITERIA), None, &VARIANT::default())?;
+        let job = searcher
+            .BeginSearch(
+                &BSTR::from(SEARCH_CRITERIA),
+                &ISearchCompletedCallback::from(SearchCb),
+                &VARIANT::default(),
+            )
+            .map_err(|e| step("BeginSearch", e))?;
         let start = Instant::now();
         loop {
             if job.IsCompleted()?.as_bool() {
@@ -211,8 +263,8 @@ fn search(
             });
             std::thread::sleep(Duration::from_millis(500));
         }
-        let result = searcher.EndSearch(&job)?;
-        let coll = result.Updates()?;
+        let result = searcher.EndSearch(&job).map_err(|e| step("EndSearch", e))?;
+        let coll = result.Updates().map_err(|e| step("Updates", e))?;
         let mut v = Vec::new();
         for i in 0..coll.Count()? {
             v.push(coll.get_Item(i)?);
@@ -290,7 +342,11 @@ pub fn install_updates(
         check_cancel(cancel)?;
         let downloader = sess.CreateUpdateDownloader()?;
         downloader.SetUpdates(&to_install)?;
-        let djob = downloader.BeginDownload(None, None, &VARIANT::default())?;
+        let djob = downloader.BeginDownload(
+            None,
+            &IDownloadCompletedCallback::from(DownloadCb),
+            &VARIANT::default(),
+        )?;
         while !djob.IsCompleted()?.as_bool() {
             if cancel.load(Ordering::Relaxed) {
                 let _ = djob.RequestAbort();
@@ -342,7 +398,11 @@ pub fn install_updates(
         let installer = sess.CreateUpdateInstaller()?;
         installer.SetUpdates(&ready)?;
         let _ = installer.SetAllowSourcePrompts(false.into());
-        let ijob = installer.BeginInstall(None, None, &VARIANT::default())?;
+        let ijob = installer.BeginInstall(
+            None,
+            &IInstallationCompletedCallback::from(InstallCb),
+            &VARIANT::default(),
+        )?;
         while !ijob.IsCompleted()?.as_bool() {
             if let Ok(p) = ijob.GetProgress() {
                 let idx = p.CurrentUpdateIndex().unwrap_or(0);
