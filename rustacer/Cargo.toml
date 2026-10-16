@@ -1,0 +1,25 @@
+﻿[package]
+name = "rustacer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Rustacer - Windows system optimizer and monitor"
+
+[dependencies]
+rustacer-core = { path = "../rustacer-core" }
+eframe = "0.36"
+egui_plot = "0.37"
+rfd = "0.17"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-appender = "0.2"
+winrt-notification = "0.5"
+sysinfo = "0.39"
+egui_extras = "0.36"
+
+[build-dependencies]
+embed-resource = "3"
+
+
+
