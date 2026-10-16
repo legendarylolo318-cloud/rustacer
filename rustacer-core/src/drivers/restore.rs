@@ -1,9 +1,13 @@
-//! System Restore point creation via SRSetRestorePointW.
+//! System Restore: create a point before driver installs, list existing points, delete one.
 
-use crate::admin::is_elevated;
+use crate::admin::{is_elevated, require_admin};
+use crate::error::{CoreError, Result};
+use crate::util::ComGuard;
+use serde::Deserialize;
+use tracing::info;
 use windows::Win32::System::Restore::{
-    SRSetRestorePointW, RESTOREPOINTINFOW, RESTOREPOINTINFO_EVENT_TYPE, RESTOREPOINTINFO_TYPE,
-    STATEMGRSTATUS,
+    SRRemoveRestorePoint, SRSetRestorePointW, RESTOREPOINTINFOW, RESTOREPOINTINFO_EVENT_TYPE,
+    RESTOREPOINTINFO_TYPE, STATEMGRSTATUS,
 };
 
 const BEGIN_SYSTEM_CHANGE: u32 = 100;
@@ -23,7 +27,8 @@ fn describe_status(code: u32) -> String {
     match code {
         0 => "success".into(),
         1058 => "System Protection is turned off (System Restore service disabled)".into(),
-        1460 | 1168 => "a restore point could not be created right now (Windows allows one every 24 hours by default)".into(),
+        1168 => "that restore point does not exist".into(),
+        1460 => "a restore point could not be created right now (Windows allows one every 24 hours by default)".into(),
         5 => "access denied - administrator rights are required".into(),
         n => format!("error {n}"),
     }
@@ -71,9 +76,127 @@ pub fn finish_restore_point(sequence: i64) {
     let _ = unsafe { SRSetRestorePointW(&info, &mut status) };
 }
 
+// ---------- listing / deleting existing restore points ----------
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RestorePoint {
+    pub sequence: u32,
+    pub description: String,
+    /// "YYYY-MM-DD HH:MM" (UTC as reported by WMI), or empty.
+    pub created: String,
+    pub kind: String,
+}
+
+#[derive(Deserialize, Debug)]
+#[serde(rename = "SystemRestore")]
+#[serde(rename_all = "PascalCase")]
+struct RawPoint {
+    sequence_number: Option<u32>,
+    description: Option<String>,
+    creation_time: Option<String>,
+    restore_point_type: Option<u32>,
+}
+
+/// Restore point type codes used by System Restore.
+pub fn kind_label(t: u32) -> String {
+    match t {
+        0 => "Application install".into(),
+        1 => "Application uninstall".into(),
+        6 => "Restore operation".into(),
+        7 => "System checkpoint".into(),
+        10 => "Device driver install".into(),
+        12 => "Settings change".into(),
+        13 => "Cancelled operation".into(),
+        16 => "Manual / backup recovery".into(),
+        n => format!("Type {n}"),
+    }
+}
+
+/// CIM datetime `20261016123045.000000-000` -> `2026-10-16 12:30`.
+pub fn format_cim_datetime(s: &str) -> String {
+    let d = s.get(0..12).unwrap_or("");
+    if d.len() == 12 && d.chars().all(|c| c.is_ascii_digit()) {
+        format!(
+            "{}-{}-{} {}:{}",
+            &d[0..4],
+            &d[4..6],
+            &d[6..8],
+            &d[8..10],
+            &d[10..12]
+        )
+    } else {
+        String::new()
+    }
+}
+
+/// List existing restore points, newest first. Needs administrator rights.
+pub fn list_restore_points() -> Result<Vec<RestorePoint>> {
+    require_admin()?;
+    let _com = ComGuard::new()?;
+    let con = wmi::WMIConnection::with_namespace_path(r"root\default")?;
+    let raw: Vec<RawPoint> = con.query()?;
+    let mut v: Vec<RestorePoint> = raw
+        .into_iter()
+        .filter_map(|r| {
+            Some(RestorePoint {
+                sequence: r.sequence_number?,
+                description: r.description.unwrap_or_default(),
+                created: r
+                    .creation_time
+                    .as_deref()
+                    .map(format_cim_datetime)
+                    .unwrap_or_default(),
+                kind: kind_label(r.restore_point_type.unwrap_or(u32::MAX)),
+            })
+        })
+        .collect();
+    v.sort_by_key(|r| std::cmp::Reverse(r.sequence));
+    Ok(v)
+}
+
+/// Permanently delete one restore point. Needs administrator rights; cannot be undone.
+pub fn delete_restore_point(sequence: u32) -> Result<()> {
+    require_admin()?;
+    // SAFETY: plain call taking a sequence number; no pointers involved.
+    let code = unsafe { SRRemoveRestorePoint(sequence) };
+    if code == 0 {
+        info!("deleted restore point #{sequence}");
+        Ok(())
+    } else {
+        Err(CoreError::Message(format!(
+            "Could not delete restore point #{sequence}: {}",
+            describe_status(code)
+        )))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn kinds_and_dates() {
+        assert_eq!(kind_label(10), "Device driver install");
+        assert_eq!(kind_label(99), "Type 99");
+        assert_eq!(
+            format_cim_datetime("20261016123045.000000-000"),
+            "2026-10-16 12:30"
+        );
+        assert_eq!(format_cim_datetime("garbage"), "");
+        assert_eq!(format_cim_datetime(""), "");
+    }
+
+    #[test]
+    fn listing_and_deleting_require_admin() {
+        if crate::admin::is_elevated() {
+            return; // never touch real restore points from tests
+        }
+        assert!(matches!(list_restore_points(), Err(CoreError::NeedsAdmin)));
+        assert!(matches!(
+            delete_restore_point(1),
+            Err(CoreError::NeedsAdmin)
+        ));
+    }
 
     #[test]
     fn status_text() {

@@ -1,4 +1,4 @@
-﻿# Rustacer
+# Rustacer
 
 A native Windows 10/11 system optimizer, monitor and driver updater written in Rust.
 It ships as a single portable `.exe` built with [egui/eframe](https://github.com/emilk/egui), so there is no WebView and no Electron.

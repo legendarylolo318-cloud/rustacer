@@ -448,6 +448,7 @@ fn drivers(app: &mut App, ui: &mut Ui) {
             (DriverTab::Updates, "Updates"),
             (DriverTab::Backup, "Backup"),
             (DriverTab::Gpu, "GPU"),
+            (DriverTab::RestorePoints, "Restore points"),
         ] {
             if ui.selectable_label(app.drivers.tab == t, label).clicked() {
                 app.drivers.tab = t;
@@ -460,6 +461,7 @@ fn drivers(app: &mut App, ui: &mut Ui) {
         DriverTab::Updates => drivers_updates(app, ui),
         DriverTab::Backup => drivers_backup(app, ui),
         DriverTab::Gpu => drivers_gpu(app, ui),
+        DriverTab::RestorePoints => restore_points(app, ui),
     }
 }
 
@@ -867,6 +869,90 @@ fn drivers_backup(app: &mut App, ui: &mut Ui) {
                 ui.label(RichText::new(l).monospace().small());
             }
         });
+}
+
+fn restore_points(app: &mut App, ui: &mut Ui) {
+    ui.label("System Restore points on this PC. Keep the ones you may want to roll back to; deleting one is permanent.");
+    if !app.elevated {
+        ui.add_space(6.0);
+        ui.label("Viewing and deleting restore points needs administrator rights (use \"Restart as admin\").");
+        return;
+    }
+    if !app.drivers.rp_loaded && !app.drivers.rp_loading {
+        app.load_restore_points();
+    }
+    ui.horizontal(|ui| {
+        if ui.button(tr(Lang::English, "common.refresh")).clicked() {
+            app.load_restore_points();
+        }
+        if app.drivers.rp_loading {
+            ui.spinner();
+        }
+    });
+    if let Some(e) = &app.drivers.rp_error {
+        ui.colored_label(Color32::from_rgb(0xe5, 0x48, 0x4d), e);
+        return;
+    }
+    if app.drivers.rp_loaded && app.drivers.restore_points.is_empty() {
+        ui.label("No restore points exist (or System Protection is turned off).");
+        return;
+    }
+    let mut delete: Option<(u32, String, bool)> = None;
+    let newest = app.drivers.restore_points.first().map(|r| r.sequence);
+    TableBuilder::new(ui)
+        .striped(true)
+        .resizable(true)
+        .column(Column::exact(50.0))
+        .column(Column::initial(140.0))
+        .column(Column::initial(170.0))
+        .column(Column::remainder().clip(true))
+        .column(Column::exact(90.0))
+        .header(ROW_H, |mut h| {
+            for t in ["#", "Created (UTC)", "Type", "Description", ""] {
+                h.col(|ui| {
+                    ui.strong(t);
+                });
+            }
+        })
+        .body(|body| {
+            let n = app.drivers.restore_points.len();
+            body.rows(ROW_H, n, |mut row| {
+                let r = &app.drivers.restore_points[row.index()];
+                row.col(|ui| {
+                    ui.label(r.sequence.to_string());
+                });
+                row.col(|ui| {
+                    ui.label(&r.created);
+                });
+                row.col(|ui| {
+                    ui.label(&r.kind);
+                });
+                row.col(|ui| {
+                    ui.label(&r.description).on_hover_text(&r.description);
+                });
+                row.col(|ui| {
+                    if ui.add(danger_btn(ui, "Delete")).clicked() {
+                        delete = Some((
+                            r.sequence,
+                            r.description.clone(),
+                            Some(r.sequence) == newest,
+                        ));
+                    }
+                });
+            });
+        });
+    if let Some((seq, desc, is_newest)) = delete {
+        let mut warn = "Deleting a restore point cannot be undone. You will no longer be able to roll back to it.".to_string();
+        if is_newest {
+            warn.push_str("\nThis is your NEWEST restore point.");
+        }
+        app.ask(
+            "Delete restore point",
+            format!("Permanently delete restore point #{seq} \"{desc}\"?"),
+            Some(warn),
+            Act::DeleteRestorePoint(seq, desc),
+        );
+    }
 }
 
 fn drivers_gpu(app: &mut App, ui: &mut Ui) {

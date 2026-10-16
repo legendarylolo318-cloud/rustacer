@@ -80,6 +80,7 @@ pub enum Msg {
     InstallDone(Result<InstallSummary, String>),
     BackupLine(String),
     BackupDone(Result<BackupResult, String>),
+    RestorePoints(Result<Vec<restore::RestorePoint>, String>),
     Notice {
         error: bool,
         text: String,
@@ -133,6 +134,7 @@ pub enum Act {
     InstallDrivers(Vec<DriverUpdate>),
     RebootNow,
     BackupDrivers(PathBuf),
+    DeleteRestorePoint(u32, String),
 }
 
 pub struct Confirm {
@@ -178,6 +180,7 @@ pub enum DriverTab {
     Updates,
     Backup,
     Gpu,
+    RestorePoints,
 }
 
 #[derive(Default)]
@@ -190,6 +193,10 @@ pub struct DriversState {
     pub updates: Vec<(DriverUpdate, bool)>,
     pub show_all_updates: bool,
     pub gpu_skipped: Vec<String>,
+    pub restore_points: Vec<restore::RestorePoint>,
+    pub rp_loading: bool,
+    pub rp_loaded: bool,
+    pub rp_error: Option<String>,
     pub scanning: bool,
     pub scanned_once: bool,
     pub scan_progress: Option<Progress>,
@@ -267,7 +274,7 @@ pub struct App {
     pub smoke: Option<(Option<Instant>, usize)>,
 }
 
-const SMOKE_STEPS: [(Page, Option<DriverTab>); 12] = [
+const SMOKE_STEPS: [(Page, Option<DriverTab>); 13] = [
     (Page::Dashboard, None),
     (Page::Startup, None),
     (Page::Cleaner, None),
@@ -275,6 +282,7 @@ const SMOKE_STEPS: [(Page, Option<DriverTab>); 12] = [
     (Page::Drivers, Some(DriverTab::Updates)),
     (Page::Drivers, Some(DriverTab::Backup)),
     (Page::Drivers, Some(DriverTab::Gpu)),
+    (Page::Drivers, Some(DriverTab::RestorePoints)),
     (Page::Services, None),
     (Page::Processes, None),
     (Page::Uninstaller, None),
@@ -480,7 +488,21 @@ impl App {
                         Err(e) => format!("Backup failed: {e}"),
                     });
                 }
+                Msg::RestorePoints(r) => {
+                    self.drivers.rp_loading = false;
+                    self.drivers.rp_loaded = true;
+                    match r {
+                        Ok(v) => {
+                            self.drivers.restore_points = v;
+                            self.drivers.rp_error = None;
+                        }
+                        Err(e) => self.drivers.rp_error = Some(e),
+                    }
+                }
                 Msg::Notice { error, text } => self.notify(error, text),
+                Msg::Reload(Page::Drivers) if self.drivers.tab == DriverTab::RestorePoints => {
+                    self.load_restore_points()
+                }
                 Msg::Reload(p) => self.load_page(p, true),
             }
         }
@@ -587,6 +609,18 @@ impl App {
             Ok(()) => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
             Err(e) => self.notify(true, e.to_string()),
         }
+    }
+
+    pub fn load_restore_points(&mut self) {
+        if self.drivers.rp_loading {
+            return;
+        }
+        self.drivers.rp_loading = true;
+        self.spawn(|bus| {
+            bus.send(Msg::RestorePoints(
+                restore::list_restore_points().map_err(|e| e.to_string()),
+            ))
+        });
     }
 
     pub fn scan_driver_updates(&mut self) {
@@ -722,6 +756,13 @@ impl App {
                 });
             }
             Act::InstallDrivers(list) => self.start_install(list),
+            Act::DeleteRestorePoint(seq, desc) => self.spawn(move |bus| {
+                match restore::delete_restore_point(seq) {
+                    Ok(()) => bus.ok(format!("Deleted restore point #{seq} ({desc}).")),
+                    Err(e) => bus.err(e.to_string()),
+                }
+                bus.send(Msg::Reload(Page::Drivers));
+            }),
         }
     }
 
