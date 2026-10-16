@@ -8,7 +8,6 @@ description = "System logic for Rustacer (no GUI)"
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 toml = "1"
-anyhow = "1"
 thiserror = "2"
 tracing = "0.1"
 sysinfo = "0.39"

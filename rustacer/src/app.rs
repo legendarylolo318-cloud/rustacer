@@ -1,4 +1,4 @@
-use eframe::egui::{self, Color32, Context};
+﻿use eframe::egui::{self, Color32, Context};
 use rustacer_core::cleaner::{self, Category, CleanReport, ScanResult};
 use rustacer_core::config::{Config, Theme};
 use rustacer_core::drivers::backup::{self, BackupResult};
@@ -853,7 +853,7 @@ fn dirs_documents() -> String {
 pub fn toast(title: &str, body: &str) {
     let (t, b) = (title.to_string(), body.to_string());
     std::thread::spawn(move || {
-        let _ = winrt_notification::Toast::new(winrt_notification::Toast::POWERSHELL_APP_ID)
+        let _ = tauri_winrt_notification::Toast::new(tauri_winrt_notification::Toast::POWERSHELL_APP_ID)
             .title(&t)
             .text1(&b)
             .show();
@@ -876,3 +876,4 @@ impl eframe::App for App {
         ctx.request_repaint_after(Duration::from_millis(500));
     }
 }
+
