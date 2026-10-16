@@ -102,7 +102,16 @@ impl Config {
             return Self::default();
         };
         match std::fs::read_to_string(&p) {
-            Ok(s) => Self::from_toml(&s).unwrap_or_default(),
+            Ok(s) => match Self::from_toml(&s) {
+                Ok(c) => c,
+                Err(e) => {
+                    // Keep the broken file for the user instead of silently overwriting it later.
+                    let bad = p.with_extension("toml.bad");
+                    let _ = std::fs::rename(&p, &bad);
+                    tracing::warn!("config was invalid ({e}); moved to {}", bad.display());
+                    Self::default()
+                }
+            },
             Err(_) => Self::default(),
         }
     }
