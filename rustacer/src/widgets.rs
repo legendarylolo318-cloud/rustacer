@@ -1,4 +1,4 @@
-use eframe::egui::{self, Color32, CornerRadius, Pos2, RichText, Sense, Shape, Stroke, Ui, Vec2};
+﻿use eframe::egui::{self, Color32, CornerRadius, Pos2, RichText, Sense, Shape, Stroke, Ui, Vec2};
 
 pub fn severity_color(pct: f32) -> Color32 {
     if pct >= 90.0 {
@@ -86,29 +86,122 @@ pub fn admin_banner(ui: &mut Ui, elevated: bool, needed: bool) -> bool {
     clicked
 }
 
-fn readable_on(bg: Color32) -> Color32 {
-    let lum = 0.299 * f32::from(bg.r()) + 0.587 * f32::from(bg.g()) + 0.114 * f32::from(bg.b());
-    if lum > 140.0 {
-        Color32::from_rgb(0x10, 0x14, 0x1c)
+const INK: Color32 = Color32::from_rgb(0x10, 0x14, 0x1c);
+
+fn channel(c: u8) -> f32 {
+    let c = f32::from(c) / 255.0;
+    if c <= 0.039_28 {
+        c / 12.92
     } else {
-        Color32::WHITE
+        ((c + 0.055) / 1.055).powf(2.4)
     }
 }
 
-fn filled_btn(text: String, fill: Color32) -> egui::Button<'static> {
-    egui::Button::new(RichText::new(text).strong().color(readable_on(fill)))
-        .fill(fill)
-        .stroke(Stroke::new(1.0, fill.gamma_multiply(1.35)))
-        .corner_radius(CornerRadius::same(8))
-        .min_size(Vec2::new(96.0, 34.0))
+/// WCAG relative luminance.
+fn luminance(c: Color32) -> f32 {
+    0.2126 * channel(c.r()) + 0.7152 * channel(c.g()) + 0.0722 * channel(c.b())
+}
+
+/// WCAG contrast ratio (1.0 ..= 21.0).
+pub fn contrast(a: Color32, b: Color32) -> f32 {
+    let (x, y) = (luminance(a), luminance(b));
+    (x.max(y) + 0.05) / (x.min(y) + 0.05)
+}
+
+fn mix(a: Color32, b: Color32, t: f32) -> Color32 {
+    let m = |x: u8, y: u8| (f32::from(x) + (f32::from(y) - f32::from(x)) * t).round() as u8;
+    Color32::from_rgb(m(a.r(), b.r()), m(a.g(), b.g()), m(a.b(), b.b()))
+}
+
+/// Pick white or near-black text for `fill`, darkening the fill if neither reaches
+/// WCAG AA (4.5:1). Returns (fill, text).
+pub fn readable_pair(fill: Color32) -> (Color32, Color32) {
+    let mut f = fill;
+    for _ in 0..12 {
+        let (w, k) = (contrast(f, Color32::WHITE), contrast(f, INK));
+        if w >= 4.5 || k >= 4.5 {
+            return (f, if w >= k { Color32::WHITE } else { INK });
+        }
+        f = mix(f, Color32::BLACK, 0.12);
+    }
+    (f, Color32::WHITE)
+}
+
+/// A filled call-to-action button with real hover and press states.
+pub struct FilledButton {
+    text: String,
+    fill: Color32,
+}
+
+impl egui::Widget for FilledButton {
+    fn ui(self, ui: &mut Ui) -> egui::Response {
+        let (fill, ink) = readable_pair(self.fill);
+        // Hover moves toward the text colour so it stays visible on light and dark fills.
+        let hover = mix(fill, ink, 0.14);
+        let press = mix(fill, Color32::BLACK, 0.18);
+        ui.scope(|ui| {
+            let w = &mut ui.style_mut().visuals.widgets;
+            for (state, bg) in [
+                (&mut w.inactive, fill),
+                (&mut w.hovered, hover),
+                (&mut w.active, press),
+            ] {
+                state.bg_fill = bg;
+                state.weak_bg_fill = bg;
+                state.bg_stroke = Stroke::new(1.0, mix(bg, ink, 0.25));
+                state.fg_stroke = Stroke::new(1.5, ink);
+                state.corner_radius = CornerRadius::same(8);
+            }
+            w.hovered.expansion = 1.5;
+            w.active.expansion = 0.5;
+            ui.add(
+                egui::Button::new(RichText::new(self.text).strong().color(ink))
+                    .min_size(Vec2::new(96.0, 34.0)),
+            )
+            .on_hover_cursor(egui::CursorIcon::PointingHand)
+        })
+        .inner
+    }
 }
 
 /// Accent-coloured call-to-action button.
-pub fn primary_btn(ui: &Ui, text: impl Into<String>) -> egui::Button<'static> {
-    filled_btn(text.into(), ui.visuals().selection.stroke.color)
+pub fn primary_btn(ui: &Ui, text: impl Into<String>) -> FilledButton {
+    FilledButton {
+        text: text.into(),
+        fill: ui.visuals().selection.stroke.color,
+    }
 }
 
 /// Red button for destructive actions.
-pub fn danger_btn(_ui: &Ui, text: impl Into<String>) -> egui::Button<'static> {
-    filled_btn(text.into(), Color32::from_rgb(0xc9, 0x3c, 0x42))
+pub fn danger_btn(_ui: &Ui, text: impl Into<String>) -> FilledButton {
+    FilledButton {
+        text: text.into(),
+        fill: Color32::from_rgb(0xc9, 0x3c, 0x42),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rustacer_core::config::Theme;
+
+    #[test]
+    fn every_theme_accent_button_is_readable() {
+        for t in Theme::ALL {
+            let accent = crate::theme::visuals(t).selection.stroke.color;
+            let (fill, ink) = readable_pair(accent);
+            let c = contrast(fill, ink);
+            assert!(c >= 4.5, "{t:?}: contrast {c:.2} for {accent:?}");
+            let hover = mix(fill, ink, 0.14);
+            assert!(contrast(hover, ink) >= 3.0, "{t:?}: hover contrast");
+        }
+        let (f, i) = readable_pair(Color32::from_rgb(0xc9, 0x3c, 0x42));
+        assert!(contrast(f, i) >= 4.5, "danger button");
+    }
+
+    #[test]
+    fn contrast_extremes() {
+        assert!((contrast(Color32::WHITE, Color32::BLACK) - 21.0).abs() < 0.01);
+        assert!((contrast(Color32::WHITE, Color32::WHITE) - 1.0).abs() < 0.01);
+    }
 }
