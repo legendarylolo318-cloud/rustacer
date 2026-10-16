@@ -15,6 +15,37 @@ use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_INPROC_SERVER};
 use windows::Win32::System::UpdateAgent::*;
 use windows::Win32::System::Variant::VARIANT;
 
+/// Number of Windows Update operations (search/install) running in this process.
+static WU_IN_USE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// True while Rustacer is searching or installing through Windows Update. The cleaner and
+/// service control refuse to stop `wuauserv` or clear its cache while this is set.
+pub fn windows_update_in_use() -> bool {
+    WU_IN_USE.load(Ordering::SeqCst) > 0
+}
+
+/// RAII marker for an in-flight Windows Update operation.
+pub struct WuInUse(());
+
+impl WuInUse {
+    pub fn new() -> Self {
+        WU_IN_USE.fetch_add(1, Ordering::SeqCst);
+        WuInUse(())
+    }
+}
+
+impl Default for WuInUse {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Drop for WuInUse {
+    fn drop(&mut self) {
+        WU_IN_USE.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
 pub const SEARCH_CRITERIA: &str = "IsInstalled=0 and IsHidden=0 and Type='Driver'";
 
 #[derive(Debug, Clone, Default)]
@@ -374,6 +405,7 @@ pub fn search_driver_updates(
     cancel: &AtomicBool,
     progress: &mut dyn FnMut(Progress),
 ) -> Result<Vec<DriverUpdate>> {
+    let _busy = WuInUse::new();
     let _com = ComGuard::new()?;
     let sess = session()?;
     progress(Progress {
@@ -400,6 +432,7 @@ pub fn install_updates(
     progress: &mut dyn FnMut(Progress),
 ) -> Result<InstallSummary> {
     require_admin()?;
+    let _busy = WuInUse::new();
     if selected_ids.is_empty() {
         return Err(CoreError::Message("No updates were selected.".into()));
     }
@@ -692,6 +725,16 @@ mod tests {
         assert_eq!(dropped.len(), 3);
         assert_eq!(v.len(), 1);
         assert!(v[0].title.contains("ComputeAccelerator"));
+    }
+
+    #[test]
+    fn in_use_marker_counts() {
+        let before = windows_update_in_use();
+        {
+            let _a = WuInUse::new();
+            assert!(windows_update_in_use());
+        }
+        assert_eq!(windows_update_in_use(), before);
     }
 
     #[test]

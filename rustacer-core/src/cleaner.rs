@@ -425,6 +425,12 @@ pub fn clean_target(t: &Target, cancel: &AtomicBool) -> Result<CleanReport> {
         });
     }
 
+    // Never pull the cache out from under an in-flight driver search/install.
+    if t.category == Category::WindowsUpdateCache && crate::drivers::wua::windows_update_in_use() {
+        return Err(CoreError::Blocked(
+            "the driver updater is using Windows Update right now; clean this category after it finishes".into(),
+        ));
+    }
     // Windows Update cache: stop wuauserv (and restart only if it was running).
     let mut restart_wu = false;
     if t.category == Category::WindowsUpdateCache

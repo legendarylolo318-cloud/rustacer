@@ -137,7 +137,7 @@ pub fn is_critical(name: &str) -> bool {
 /// wuauserv untouchable while the driver updater is working.
 pub fn check_change(name: &str, action: Action, driver_updater_busy: bool) -> Result<()> {
     let l = name.to_ascii_lowercase();
-    if l == "wuauserv" && driver_updater_busy {
+    if l == "wuauserv" && (driver_updater_busy || crate::drivers::wua::windows_update_in_use()) {
         return Err(CoreError::Blocked(
             "Windows Update is in use by the driver updater right now.".into(),
         ));
