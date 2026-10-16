@@ -2,6 +2,7 @@
 
 mod app;
 mod pages;
+mod shots;
 mod theme;
 mod widgets;
 
@@ -34,7 +35,11 @@ fn main() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()
             .with_title("Rustacer")
-            .with_inner_size([1180.0, 760.0])
+            .with_inner_size(if std::env::args().any(|a| a == "--screenshots") {
+                [1280.0, 800.0]
+            } else {
+                [1180.0, 760.0]
+            })
             .with_min_inner_size([900.0, 560.0]),
         ..Default::default()
     };

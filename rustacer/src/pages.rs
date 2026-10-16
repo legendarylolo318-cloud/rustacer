@@ -143,7 +143,14 @@ fn dashboard(app: &mut App, ui: &mut Ui) {
                     .show(ui, |ui| {
                         let boot = format_boot(i.boot_time_unix);
                         let rows: Vec<(&str, String)> = vec![
-                            ("Hostname", i.hostname.clone()),
+                            (
+                                "Hostname",
+                                if app.redact {
+                                    "DEMO-PC".to_string()
+                                } else {
+                                    i.hostname.clone()
+                                },
+                            ),
                             ("OS", format!("{} (build {})", i.os, i.os_build)),
                             (
                                 "CPU",
@@ -360,7 +367,11 @@ fn cleaner(app: &mut App, ui: &mut Ui) {
                         egui::Checkbox::new(checked, r.category.label()),
                     );
                     ui.label(format_bytes(r.bytes));
-                    ui.label(format!("{} files", r.files));
+                    ui.label(if r.files == 1 {
+                        "1 file".to_string()
+                    } else {
+                        format!("{} files", r.files)
+                    });
                     if let Some(u) = &r.unavailable {
                         ui.colored_label(Color32::from_rgb(0xf5, 0xa6, 0x23), u);
                     } else {
@@ -1531,8 +1542,11 @@ fn resources(app: &mut App, ui: &mut Ui) {
             .allow_scroll(false)
             .include_x(-range)
             .include_x(0.0)
-            .include_y(0.0)
-            .legend(egui_plot::Legend::default());
+            .include_y(0.0);
+        // A legend with one entry per core overflows the plot; hovering names the line instead.
+        if lines.len() <= 4 {
+            p = p.legend(egui_plot::Legend::default());
+        }
         if pct {
             p = p.include_y(100.0);
         }

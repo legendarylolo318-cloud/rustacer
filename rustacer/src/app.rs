@@ -272,6 +272,10 @@ pub struct App {
     pub self_registered: bool,
     /// `--smoke-test`: visit every page and driver tab, then exit.
     pub smoke: Option<(Option<Instant>, usize)>,
+    /// `--screenshots <dir>` tour (see shots.rs).
+    pub shots: Option<crate::shots::Shots>,
+    /// Hide identifying details (PC name) - set during the screenshot tour.
+    pub redact: bool,
 }
 
 const SMOKE_STEPS: [(Page, Option<DriverTab>); 13] = [
@@ -363,6 +367,8 @@ impl App {
             alert_times: HashMap::new(),
             applied_theme: None,
             self_registered: startup::is_self_registered(),
+            shots: crate::shots::Shots::from_args(),
+            redact: std::env::args().any(|a| a == "--screenshots"),
             smoke: std::env::args()
                 .any(|a| a == "--smoke-test")
                 .then_some((None, 0)),
@@ -685,7 +691,16 @@ impl App {
                 }
                 bus.send(Msg::Reload(Page::Startup));
             }),
-            Act::Clean(cats) => {
+            Act::Clean(mut cats) => {
+                if (self.drivers.scanning || self.drivers.installing)
+                    && cats.contains(&Category::WindowsUpdateCache)
+                {
+                    cats.retain(|c| *c != Category::WindowsUpdateCache);
+                    self.notify(
+                        true,
+                        "Skipped the Windows Update cache: the driver updater is using Windows Update.",
+                    );
+                }
                 self.cleaner.cleaning = true;
                 self.spawn(move |bus| {
                     let cancel = AtomicBool::new(false);
@@ -983,6 +998,7 @@ impl eframe::App for App {
             crate::pages::show(self, ui, &ctx);
         });
         self.smoke_step(&ctx);
+        crate::shots::tick(self, &ctx);
         self.confirm_dialog(&ctx);
         self.driver_dialogs(&ctx);
         // History/gauges move on their own via sampler wakeups; keep a slow tick for notices.

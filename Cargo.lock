@@ -2971,6 +2971,7 @@ dependencies = [
  "egui_extras",
  "egui_plot",
  "embed-resource",
+ "png",
  "rfd",
  "rustacer-core",
  "tauri-winrt-notification",
