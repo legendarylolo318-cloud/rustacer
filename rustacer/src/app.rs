@@ -170,7 +170,7 @@ pub struct StartupState {
     pub new_args: String,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum DriverTab {
     #[default]
     Installed,
@@ -261,7 +261,24 @@ pub struct App {
     alert_times: HashMap<String, Instant>,
     applied_theme: Option<Theme>,
     pub self_registered: bool,
+    /// `--smoke-test`: visit every page and driver tab, then exit.
+    pub smoke: Option<(Option<Instant>, usize)>,
 }
+
+const SMOKE_STEPS: [(Page, Option<DriverTab>); 12] = [
+    (Page::Dashboard, None),
+    (Page::Startup, None),
+    (Page::Cleaner, None),
+    (Page::Drivers, Some(DriverTab::Installed)),
+    (Page::Drivers, Some(DriverTab::Updates)),
+    (Page::Drivers, Some(DriverTab::Backup)),
+    (Page::Drivers, Some(DriverTab::Gpu)),
+    (Page::Services, None),
+    (Page::Processes, None),
+    (Page::Uninstaller, None),
+    (Page::Resources, None),
+    (Page::Settings, None),
+];
 
 impl App {
     pub fn new(cc: &eframe::CreationContext<'_>, cfg: Config) -> Self {
@@ -336,6 +353,9 @@ impl App {
             alert_times: HashMap::new(),
             applied_theme: None,
             self_registered: startup::is_self_registered(),
+            smoke: std::env::args()
+                .any(|a| a == "--smoke-test")
+                .then_some((None, 0)),
             cfg,
         };
         app.drivers.backup_dir = dirs_documents();
@@ -741,6 +761,45 @@ impl App {
         });
     }
 
+    fn smoke_step(&mut self, ctx: &Context) {
+        let Some((started, step)) = self.smoke else {
+            return;
+        };
+        let Some(t0) = started else {
+            let (page, tab) = SMOKE_STEPS[step];
+            info!(
+                "smoke test: showing {page:?} {tab:?} (loaded so far: {} startup, {} drivers, {} services, {} processes, {} apps, {} history samples)",
+                self.startup.entries.len(),
+                self.drivers.installed.len(),
+                self.services.list.len(),
+                self.procs.list.len(),
+                self.uninst.list.len(),
+                self.history.len()
+            );
+            self.goto(page);
+            if let Some(t) = tab {
+                self.drivers.tab = t;
+            }
+            self.smoke = Some((Some(Instant::now()), step));
+            ctx.request_repaint();
+            return;
+        };
+        // Give background loads time to finish and their results time to be drawn.
+        if t0.elapsed() >= Duration::from_millis(2500) {
+            if step + 1 == SMOKE_STEPS.len() {
+                info!(
+                    "smoke test passed: {} steps rendered without a panic",
+                    SMOKE_STEPS.len()
+                );
+                self.smoke = None;
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                return;
+            }
+            self.smoke = Some((None, step + 1));
+        }
+        ctx.request_repaint();
+    }
+
     pub fn open_vendor(&mut self, v: GpuVendor) {
         self.spawn(move |bus| {
             if let Err(e) = rustacer_core::drivers::gpu::open_official_page(v) {
@@ -878,6 +937,7 @@ impl eframe::App for App {
             self.top_notice(ui);
             crate::pages::show(self, ui, &ctx);
         });
+        self.smoke_step(&ctx);
         self.confirm_dialog(&ctx);
         self.driver_dialogs(&ctx);
         // History/gauges move on their own via sampler wakeups; keep a slow tick for notices.
