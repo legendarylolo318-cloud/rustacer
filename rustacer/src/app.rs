@@ -269,6 +269,8 @@ pub struct App {
     pub uninst: UninstState,
     alert_times: HashMap<String, Instant>,
     applied_theme: Option<Theme>,
+    applied_scale: Option<f32>,
+    applied_motion: Option<bool>,
     pub self_registered: bool,
     /// `--smoke-test`: visit every page and driver tab, then exit.
     pub smoke: Option<(Option<Instant>, usize)>,
@@ -366,6 +368,8 @@ impl App {
             },
             alert_times: HashMap::new(),
             applied_theme: None,
+            applied_scale: None,
+            applied_motion: None,
             self_registered: startup::is_self_registered(),
             shots: crate::shots::Shots::from_args(),
             redact: std::env::args().any(|a| a == "--screenshots"),
@@ -405,6 +409,29 @@ impl App {
         if self.applied_theme != Some(self.cfg.theme) {
             ctx.set_visuals(crate::theme::visuals(self.cfg.theme));
             self.applied_theme = Some(self.cfg.theme);
+        }
+        if self.applied_motion != Some(self.cfg.reduce_motion) {
+            crate::theme::apply_motion(ctx, self.cfg.reduce_motion);
+            self.applied_motion = Some(self.cfg.reduce_motion);
+        }
+        // UI scale: apply the setting, and save changes made with Ctrl+= / Ctrl+- / Ctrl+0.
+        let live = ctx.zoom_factor();
+        match self.applied_scale {
+            Some(applied) if (applied - self.cfg.ui_scale).abs() > 0.001 => {
+                ctx.set_zoom_factor(self.cfg.ui_scale);
+                self.applied_scale = Some(self.cfg.ui_scale);
+            }
+            Some(applied) if (live - applied).abs() > 0.001 => {
+                self.cfg.ui_scale = live.clamp(0.75, 2.0);
+                ctx.set_zoom_factor(self.cfg.ui_scale);
+                self.applied_scale = Some(self.cfg.ui_scale);
+                self.save_cfg();
+            }
+            None => {
+                ctx.set_zoom_factor(self.cfg.ui_scale);
+                self.applied_scale = Some(self.cfg.ui_scale);
+            }
+            _ => {}
         }
     }
 
@@ -821,6 +848,43 @@ impl App {
         });
     }
 
+    /// F11 toggles fullscreen; Esc leaves it (when no dialog is open).
+    fn window_keys(&mut self, ctx: &Context) {
+        let (f11, esc, fullscreen) = ctx.input(|i| {
+            (
+                i.key_pressed(egui::Key::F11),
+                i.key_pressed(egui::Key::Escape),
+                i.viewport().fullscreen.unwrap_or(false),
+            )
+        });
+        if f11 {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(!fullscreen));
+        } else if esc && fullscreen && self.confirm.is_none() {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
+        }
+        // Ctrl+1 .. Ctrl+9: jump to a page (same order as the sidebar).
+        if self.confirm.is_none() {
+            const KEYS: [egui::Key; 9] = [
+                egui::Key::Num1,
+                egui::Key::Num2,
+                egui::Key::Num3,
+                egui::Key::Num4,
+                egui::Key::Num5,
+                egui::Key::Num6,
+                egui::Key::Num7,
+                egui::Key::Num8,
+                egui::Key::Num9,
+            ];
+            let hit = ctx.input_mut(|i| {
+                KEYS.iter()
+                    .position(|k| i.consume_key(egui::Modifiers::COMMAND, *k))
+            });
+            if let Some(n) = hit {
+                self.goto(Page::ALL[n]);
+            }
+        }
+    }
+
     fn smoke_step(&mut self, ctx: &Context) {
         let Some((started, step)) = self.smoke else {
             return;
@@ -999,6 +1063,7 @@ impl eframe::App for App {
         });
         self.smoke_step(&ctx);
         crate::shots::tick(self, &ctx);
+        self.window_keys(&ctx);
         self.confirm_dialog(&ctx);
         self.driver_dialogs(&ctx);
         // History/gauges move on their own via sampler wakeups; keep a slow tick for notices.

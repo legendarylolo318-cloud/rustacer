@@ -7,7 +7,7 @@ description = "Rustacer - Windows system optimizer and monitor"
 
 [dependencies]
 rustacer-core = { path = "../rustacer-core" }
-eframe = "0.36"
+eframe = { version = "0.36", features = ["persistence"] }
 egui_plot = "0.37"
 rfd = "0.17"
 tracing = "0.1"

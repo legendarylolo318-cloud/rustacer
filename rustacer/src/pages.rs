@@ -16,45 +16,70 @@ use rustacer_core::util::{format_bytes, open_path, reveal_in_explorer};
 
 const ROW_H: f32 = 26.0;
 
+/// Column widths in the tables are written for ~1000 px of content. Scale them to the
+/// space actually available, and key the stored table state on the width so the columns
+/// re-fit when the window is resized, maximized or made fullscreen.
+fn table_layout(ui: &mut Ui) -> (f32, egui::Id) {
+    // Narrow cells end in "..." instead of wrapping onto a second line.
+    ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
+    let w = ui.available_width();
+    let k = (w / 1000.0).clamp(0.45, 2.5);
+    (k, egui::Id::new(("table-width", (w / 48.0).round() as i32)))
+}
+
 pub fn sidebar(app: &mut App, ui: &mut Ui, ctx: &Context) {
     egui::Panel::left("nav")
         .exact_size(196.0)
         .resizable(false)
         .show(ui, |ui| {
-            ui.add_space(8.0);
-            ui.heading("Rustacer");
-            ui.label(RichText::new("System optimizer").weak());
-            ui.add_space(10.0);
-            for p in Page::ALL {
-                let sel = app.page == p;
-                if ui
-                    .add_sized(
-                        [ui.available_width(), 38.0],
-                        egui::Button::selectable(sel, tr(Lang::English, p.key())),
-                    )
-                    .clicked()
-                {
-                    app.goto(p);
-                }
-            }
-            ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
-                ui.add_space(8.0);
-                if app.elevated {
-                    ui.colored_label(
-                        Color32::from_rgb(0x3d, 0xb8, 0x6b),
-                        "Running as administrator",
-                    );
-                } else {
-                    ui.label(RichText::new("Standard user mode").weak());
-                    if ui
-                        .add(primary_btn(ui, tr(Lang::English, "admin.restart")))
-                        .clicked()
-                    {
-                        app.restart_as_admin(ctx);
-                    }
-                }
-            });
+            // The footer (admin status) stays pinned; the navigation scrolls if the
+            // window is short or the UI scale is large.
+            let footer_h = 84.0;
+            egui::ScrollArea::vertical()
+                .max_height((ui.available_height() - footer_h).max(60.0))
+                .show(ui, |ui| sidebar_nav(app, ui));
+            sidebar_footer(app, ui, ctx);
         });
+}
+
+fn sidebar_nav(app: &mut App, ui: &mut Ui) {
+    ui.add_space(8.0);
+    ui.heading("Rustacer");
+    ui.label(RichText::new("System optimizer").weak());
+    ui.add_space(10.0);
+    for (n, p) in Page::ALL.into_iter().enumerate() {
+        let sel = app.page == p;
+        if ui
+            .add_sized(
+                [ui.available_width(), 38.0],
+                egui::Button::selectable(sel, tr(Lang::English, p.key())),
+            )
+            .on_hover_text(format!("Ctrl+{}", n + 1))
+            .clicked()
+        {
+            app.goto(p);
+        }
+    }
+}
+
+fn sidebar_footer(app: &mut App, ui: &mut Ui, ctx: &Context) {
+    ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
+        ui.add_space(8.0);
+        if app.elevated {
+            ui.colored_label(
+                Color32::from_rgb(0x3d, 0xb8, 0x6b),
+                "Running as administrator",
+            );
+        } else {
+            ui.label(RichText::new("Standard user mode").weak());
+            if ui
+                .add(primary_btn(ui, tr(Lang::English, "admin.restart")))
+                .clicked()
+            {
+                app.restart_as_admin(ctx);
+            }
+        }
+    });
 }
 
 pub fn show(app: &mut App, ui: &mut Ui, ctx: &Context) {
@@ -255,13 +280,20 @@ fn startup(app: &mut App, ui: &mut Ui) {
         .collect();
     let mut toggle: Option<(usize, bool)> = None;
     let mut delete: Option<usize> = None;
+    let (k, salt) = table_layout(ui);
     TableBuilder::new(ui)
+        .id_salt(salt)
         .striped(true)
         .resizable(true)
         .column(Column::exact(70.0))
-        .column(Column::initial(200.0).clip(true))
-        .column(Column::initial(170.0).clip(true))
-        .column(Column::remainder().clip(true))
+        .column(Column::initial(k * 200.0).clip(true))
+        .column(Column::initial(k * 170.0).clip(true))
+        .column(
+            Column::remainder()
+                .resizable(false)
+                .at_least(80.0)
+                .clip(true),
+        )
         .column(Column::exact(60.0))
         .header(ROW_H, |mut h| {
             for t in ["Enabled", "Name", "Source", "Command", ""] {
@@ -514,17 +546,19 @@ fn drivers_installed(app: &mut App, ui: &mut Ui) {
         ))
         .weak(),
     );
+    let (k, salt) = table_layout(ui);
     TableBuilder::new(ui)
+        .id_salt(salt)
         .striped(true)
         .resizable(true)
-        .column(Column::initial(230.0).clip(true))
-        .column(Column::initial(90.0).clip(true))
-        .column(Column::initial(150.0).clip(true))
-        .column(Column::initial(110.0).clip(true))
-        .column(Column::initial(90.0))
-        .column(Column::initial(90.0).clip(true))
-        .column(Column::initial(60.0))
-        .column(Column::remainder())
+        .column(Column::initial(k * 230.0).clip(true))
+        .column(Column::initial(k * 90.0).clip(true))
+        .column(Column::initial(k * 150.0).clip(true))
+        .column(Column::initial(k * 110.0).clip(true))
+        .column(Column::initial(k * 90.0))
+        .column(Column::initial(k * 90.0).clip(true))
+        .column(Column::initial(k * 60.0))
+        .column(Column::remainder().resizable(false).at_least(80.0))
         .header(ROW_H, |mut h| {
             for t in [
                 "Device", "Class", "Provider", "Version", "Date", "INF", "Signed", "",
@@ -733,17 +767,24 @@ fn drivers_updates(app: &mut App, ui: &mut Ui) {
         );
         return;
     }
+    let (k, salt) = table_layout(ui);
     TableBuilder::new(ui)
+        .id_salt(salt)
         .striped(true)
         .resizable(true)
         .column(Column::exact(30.0))
-        .column(Column::initial(190.0).clip(true))
-        .column(Column::initial(120.0))
-        .column(Column::initial(110.0).clip(true))
-        .column(Column::initial(110.0).clip(true))
-        .column(Column::initial(90.0))
-        .column(Column::initial(80.0))
-        .column(Column::remainder().clip(true))
+        .column(Column::initial(k * 190.0).clip(true))
+        .column(Column::initial(k * 120.0))
+        .column(Column::initial(k * 110.0).clip(true))
+        .column(Column::initial(k * 110.0).clip(true))
+        .column(Column::initial(k * 90.0))
+        .column(Column::initial(k * 80.0))
+        .column(
+            Column::remainder()
+                .resizable(false)
+                .at_least(80.0)
+                .clip(true),
+        )
         .header(ROW_H, |mut h| {
             for t in [
                 "", "Device", "Status", "Current", "New", "Date", "Size", "Title",
@@ -910,13 +951,20 @@ fn restore_points(app: &mut App, ui: &mut Ui) {
     }
     let mut delete: Option<(u32, String, bool)> = None;
     let newest = app.drivers.restore_points.first().map(|r| r.sequence);
+    let (k, salt) = table_layout(ui);
     TableBuilder::new(ui)
+        .id_salt(salt)
         .striped(true)
         .resizable(true)
         .column(Column::exact(50.0))
-        .column(Column::initial(140.0))
-        .column(Column::initial(170.0))
-        .column(Column::remainder().clip(true))
+        .column(Column::initial(k * 140.0))
+        .column(Column::initial(k * 170.0))
+        .column(
+            Column::remainder()
+                .resizable(false)
+                .at_least(80.0)
+                .clip(true),
+        )
         .column(Column::exact(90.0))
         .header(ROW_H, |mut h| {
             for t in ["#", "Created (UTC)", "Type", "Description", ""] {
@@ -1056,15 +1104,22 @@ fn services_page(app: &mut App, ui: &mut Ui) {
             });
         }
     }
+    let (k, salt) = table_layout(ui);
     TableBuilder::new(ui)
+        .id_salt(salt)
         .striped(true)
         .resizable(true)
         .sense(Sense::click())
-        .column(Column::initial(170.0).clip(true))
-        .column(Column::initial(250.0).clip(true))
-        .column(Column::initial(80.0))
-        .column(Column::initial(130.0))
-        .column(Column::remainder().clip(true))
+        .column(Column::initial(k * 170.0).clip(true))
+        .column(Column::initial(k * 250.0).clip(true))
+        .column(Column::initial(k * 80.0))
+        .column(Column::initial(k * 130.0))
+        .column(
+            Column::remainder()
+                .resizable(false)
+                .at_least(80.0)
+                .clip(true),
+        )
         .header(ROW_H, |mut h| {
             for t in [
                 "Name",
@@ -1203,16 +1258,23 @@ fn processes(app: &mut App, ui: &mut Ui) {
     });
     let heads = ["Name", "PID", "CPU %", "Memory", "User", "Path"];
     let mut new_sort: Option<usize> = None;
+    let (k, salt) = table_layout(ui);
     TableBuilder::new(ui)
+        .id_salt(salt)
         .striped(true)
         .resizable(true)
         .sense(Sense::click())
-        .column(Column::initial(200.0).clip(true))
-        .column(Column::initial(60.0))
-        .column(Column::initial(70.0))
-        .column(Column::initial(90.0))
-        .column(Column::initial(140.0).clip(true))
-        .column(Column::remainder().clip(true))
+        .column(Column::initial(k * 200.0).clip(true))
+        .column(Column::initial(k * 60.0))
+        .column(Column::initial(k * 70.0))
+        .column(Column::initial(k * 90.0))
+        .column(Column::initial(k * 140.0).clip(true))
+        .column(
+            Column::remainder()
+                .resizable(false)
+                .at_least(80.0)
+                .clip(true),
+        )
         .header(ROW_H, |mut h| {
             for (i, t) in heads.iter().enumerate() {
                 h.col(|ui| {
@@ -1387,15 +1449,17 @@ fn uninstaller(app: &mut App, ui: &mut Ui) {
         });
         ui.label(RichText::new(format!("{} apps", rows.len())).weak());
     });
+    let (k, salt) = table_layout(ui);
     TableBuilder::new(ui)
+        .id_salt(salt)
         .striped(true)
         .resizable(true)
         .sense(Sense::click())
-        .column(Column::initial(280.0).clip(true))
-        .column(Column::initial(180.0).clip(true))
-        .column(Column::initial(110.0).clip(true))
-        .column(Column::initial(80.0))
-        .column(Column::remainder())
+        .column(Column::initial(k * 280.0).clip(true))
+        .column(Column::initial(k * 180.0).clip(true))
+        .column(Column::initial(k * 110.0).clip(true))
+        .column(Column::initial(k * 80.0))
+        .column(Column::remainder().resizable(false).at_least(80.0))
         .header(ROW_H, |mut h| {
             for t in ["Name", "Publisher", "Version", "Size", "Installed"] {
                 h.col(|ui| {
@@ -1478,12 +1542,14 @@ fn winget_table(app: &mut App, ui: &mut Ui) {
             );
         }
     }
+    let (k, salt) = table_layout(ui);
     TableBuilder::new(ui)
+        .id_salt(salt)
         .striped(true)
         .sense(Sense::click())
-        .column(Column::initial(300.0).clip(true))
-        .column(Column::initial(240.0).clip(true))
-        .column(Column::remainder())
+        .column(Column::initial(k * 300.0).clip(true))
+        .column(Column::initial(k * 240.0).clip(true))
+        .column(Column::remainder().resizable(false).at_least(80.0))
         .header(ROW_H, |mut h| {
             for t in ["Name", "Id", "Version"] {
                 h.col(|ui| {
@@ -1533,10 +1599,12 @@ fn resources(app: &mut App, ui: &mut Ui) {
             .collect::<Vec<_>>()
             .into()
     };
+    // Four graphs share the page height (each also has a title row).
+    let plot_h = ((ui.available_height() - 4.0 * 30.0) / 4.0).clamp(110.0, 520.0);
     let plot = |ui: &mut Ui, id: &str, title: &str, pct: bool, lines: Vec<Line<'static>>| {
         ui.label(RichText::new(title).strong());
         let mut p = Plot::new(id.to_string())
-            .height(150.0)
+            .height(plot_h)
             .allow_zoom(false)
             .allow_drag(false)
             .allow_scroll(false)
@@ -1605,6 +1673,11 @@ fn resources(app: &mut App, ui: &mut Ui) {
 
 fn settings(app: &mut App, ui: &mut Ui) {
     heading(ui, "Settings");
+    // Scrolls when the window is small or the UI scale is large.
+    egui::ScrollArea::vertical().show(ui, |ui| settings_body(app, ui));
+}
+
+fn settings_body(app: &mut App, ui: &mut Ui) {
     let mut changed = false;
     egui::Grid::new("settings")
         .num_columns(2)
@@ -1686,6 +1759,80 @@ fn settings(app: &mut App, ui: &mut Ui) {
             }
             ui.end_row();
         });
+    ui.add_space(12.0);
+    ui.heading("Accessibility");
+    ui.add_space(4.0);
+    egui::Grid::new("a11y")
+        .num_columns(2)
+        .spacing([24.0, 10.0])
+        .show(ui, |ui| {
+            ui.label("Text and control size");
+            ui.horizontal(|ui| {
+                let mut pct = (app.cfg.ui_scale * 100.0).round() as i32;
+                if ui
+                    .add(
+                        egui::Slider::new(&mut pct, 75..=200)
+                            .suffix("%")
+                            .step_by(5.0),
+                    )
+                    .on_hover_text("Ctrl+= / Ctrl+- / Ctrl+0 also work anywhere")
+                    .changed()
+                {
+                    app.cfg.ui_scale = pct as f32 / 100.0;
+                    changed = true;
+                }
+                if ui.button("Reset").clicked() {
+                    app.cfg.ui_scale = 1.0;
+                    changed = true;
+                }
+            });
+            ui.end_row();
+            ui.label("Motion");
+            changed |= ui
+                .checkbox(
+                    &mut app.cfg.reduce_motion,
+                    "Reduce motion (turn off animations)",
+                )
+                .changed();
+            ui.end_row();
+            ui.label("High contrast");
+            let mut hc = app.cfg.theme == Theme::HighContrast;
+            if ui
+                .checkbox(&mut hc, "Use the high-contrast theme")
+                .changed()
+            {
+                app.cfg.theme = if hc { Theme::HighContrast } else { Theme::Dark };
+                changed = true;
+            }
+            ui.end_row();
+        });
+    ui.add_space(6.0);
+    egui::CollapsingHeader::new("Keyboard shortcuts").show(ui, |ui| {
+        egui::Grid::new("keys")
+            .num_columns(2)
+            .spacing([24.0, 4.0])
+            .show(ui, |ui| {
+                for (k, what) in [
+                    ("Tab / Shift+Tab", "Move between controls"),
+                    ("Space / Enter", "Press the focused button or toggle"),
+                    ("Ctrl+1 ... Ctrl+9", "Go to Dashboard ... Settings"),
+                    (
+                        "Ctrl+=  /  Ctrl+-  /  Ctrl+0",
+                        "Bigger / smaller / default size",
+                    ),
+                    ("F11", "Toggle fullscreen"),
+                    ("Esc", "Leave fullscreen"),
+                ] {
+                    ui.label(RichText::new(k).monospace());
+                    ui.label(what);
+                    ui.end_row();
+                }
+            });
+        ui.label(
+            RichText::new("Screen readers (Narrator, NVDA) are supported through AccessKit.")
+                .weak(),
+        );
+    });
     if changed {
         app.save_cfg();
     }

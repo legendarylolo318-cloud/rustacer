@@ -17,7 +17,7 @@ const fn rgb(r: u8, g: u8, b: u8) -> Color32 {
 
 fn palette(t: Theme) -> Option<Palette> {
     Some(match t {
-        Theme::Dark | Theme::Light => return None,
+        Theme::Dark | Theme::Light | Theme::HighContrast => return None,
         Theme::Midnight => Palette {
             dark: true,
             bg: rgb(0x0b, 0x10, 0x1c),
@@ -78,12 +78,74 @@ fn polish(mut v: Visuals) -> Visuals {
         w.corner_radius = r;
     }
     v.widgets.inactive.bg_stroke = Stroke::new(1.0, v.widgets.inactive.bg_fill.gamma_multiply(1.5));
+    // Keyboard focus (and press) gets a clear 2 px accent outline.
+    v.widgets.active.bg_stroke = Stroke::new(2.0, v.selection.stroke.color);
     v.window_corner_radius = CornerRadius::same(12);
     v
 }
 
+/// Black / white / yellow scheme aimed at WCAG AAA text contrast.
+fn high_contrast() -> Visuals {
+    let black = Color32::BLACK;
+    let white = Color32::WHITE;
+    let yellow = rgb(0xff, 0xd6, 0x00);
+    let blue = rgb(0x00, 0x37, 0xa6);
+    let mut v = Visuals::dark();
+    v.override_text_color = Some(white);
+    v.weak_text_color = Some(rgb(0xe6, 0xe6, 0xe6));
+    v.panel_fill = black;
+    v.window_fill = black;
+    v.extreme_bg_color = black;
+    v.faint_bg_color = rgb(0x14, 0x14, 0x14);
+    v.window_stroke = Stroke::new(2.0, white);
+    v.hyperlink_color = yellow;
+    v.selection.bg_fill = blue;
+    v.selection.stroke = Stroke::new(2.0, yellow);
+    v.warn_fg_color = yellow;
+    v.error_fg_color = rgb(0xff, 0x8a, 0x8a);
+    for w in [
+        &mut v.widgets.noninteractive,
+        &mut v.widgets.inactive,
+        &mut v.widgets.hovered,
+        &mut v.widgets.active,
+        &mut v.widgets.open,
+    ] {
+        w.bg_fill = black;
+        w.weak_bg_fill = black;
+        w.fg_stroke = Stroke::new(1.5, white);
+        w.bg_stroke = Stroke::new(1.5, white);
+    }
+    v.widgets.noninteractive.bg_stroke = Stroke::new(1.0, rgb(0xb0, 0xb0, 0xb0));
+    // bg_fill draws slider tracks and checkbox interiors: keep them visible on black.
+    v.widgets.inactive.bg_fill = rgb(0x5a, 0x5a, 0x5a);
+    v.widgets.hovered.bg_fill = rgb(0x70, 0x70, 0x70);
+    v.widgets.active.bg_fill = yellow;
+    v.widgets.hovered.bg_stroke = Stroke::new(2.0, yellow);
+    v.widgets.hovered.weak_bg_fill = rgb(0x1a, 0x1a, 0x1a);
+    v.widgets.active.bg_stroke = Stroke::new(2.0, yellow);
+    v
+}
+
 pub fn visuals(t: Theme) -> Visuals {
+    if t == Theme::HighContrast {
+        // polish() would soften the strokes; keep the high-contrast ones.
+        let mut v = high_contrast();
+        v.window_corner_radius = CornerRadius::same(4);
+        return v;
+    }
     polish(raw_visuals(t))
+}
+
+/// Turn animations off (or back to egui's default).
+pub fn apply_motion(ctx: &egui::Context, reduce: bool) {
+    ctx.global_style_mut(|s| {
+        s.animation_time = if reduce { 0.0 } else { 1.0 / 12.0 };
+        s.scroll_animation = if reduce {
+            egui::style::ScrollAnimation::none()
+        } else {
+            egui::style::ScrollAnimation::default()
+        };
+    });
 }
 
 fn raw_visuals(t: Theme) -> Visuals {

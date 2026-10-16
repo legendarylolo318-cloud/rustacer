@@ -1,6 +1,9 @@
-//! `--screenshots <dir>`: render a fixed tour of pages and save each frame as a PNG.
-//! Used to produce the README images. Only read-only actions are triggered (cleaner scan,
-//! Windows Update search), and the PC name is redacted.
+//! Capture tours that render pages and save each frame as a PNG.
+//!
+//! * `--screenshots <dir>`: the README images. Only read-only actions are triggered
+//!   (cleaner scan, Windows Update search), and the PC name is redacted.
+//! * `--resize-test <dir>`: drives the window through small, large, maximized and
+//!   fullscreen states and captures pages in each, to catch layout bugs.
 
 use crate::app::{App, DriverTab, Page};
 use eframe::egui::{self, Context};
@@ -16,94 +19,176 @@ enum Prep {
     ScanDrivers,
 }
 
+#[derive(Clone, Copy, Debug)]
+enum Win {
+    Size(f32, f32),
+    Maximized,
+    Fullscreen,
+}
+
 struct Step {
     name: &'static str,
     page: Page,
     tab: Option<DriverTab>,
     prep: Prep,
     theme: Theme,
+    win: Option<Win>,
+    /// UI scale for this step (session only).
+    scale: f32,
+    /// Minimum time on this step before capturing.
+    dwell: Duration,
 }
 
-const fn step(
-    name: &'static str,
-    page: Page,
-    tab: Option<DriverTab>,
-    prep: Prep,
-    theme: Theme,
-) -> Step {
+fn step(name: &'static str, page: Page, tab: Option<DriverTab>, prep: Prep, theme: Theme) -> Step {
     Step {
         name,
         page,
         tab,
         prep,
         theme,
+        win: None,
+        scale: 1.0,
+        dwell: Duration::from_secs(3),
     }
 }
 
-const STEPS: [Step; 9] = [
-    step("dashboard", Page::Dashboard, None, Prep::None, Theme::Dark),
-    step(
-        "cleaner",
-        Page::Cleaner,
-        None,
-        Prep::ScanCleaner,
-        Theme::Dark,
-    ),
-    step(
-        "drivers-installed",
-        Page::Drivers,
-        Some(DriverTab::Installed),
-        Prep::None,
-        Theme::Dark,
-    ),
-    step(
-        "drivers-updates",
-        Page::Drivers,
-        Some(DriverTab::Updates),
-        Prep::ScanDrivers,
-        Theme::Dark,
-    ),
-    step(
-        "drivers-gpu",
-        Page::Drivers,
-        Some(DriverTab::Gpu),
-        Prep::None,
-        Theme::Dark,
-    ),
-    step("services", Page::Services, None, Prep::None, Theme::Dark),
-    step("settings", Page::Settings, None, Prep::None, Theme::Dark),
-    step(
-        "settings-nord",
+fn readme_tour() -> Vec<Step> {
+    let mut v = vec![
+        step("dashboard", Page::Dashboard, None, Prep::None, Theme::Dark),
+        step(
+            "cleaner",
+            Page::Cleaner,
+            None,
+            Prep::ScanCleaner,
+            Theme::Dark,
+        ),
+        step(
+            "drivers-installed",
+            Page::Drivers,
+            Some(DriverTab::Installed),
+            Prep::None,
+            Theme::Dark,
+        ),
+        step(
+            "drivers-updates",
+            Page::Drivers,
+            Some(DriverTab::Updates),
+            Prep::ScanDrivers,
+            Theme::Dark,
+        ),
+        step(
+            "drivers-gpu",
+            Page::Drivers,
+            Some(DriverTab::Gpu),
+            Prep::None,
+            Theme::Dark,
+        ),
+        step("services", Page::Services, None, Prep::None, Theme::Dark),
+        step("settings", Page::Settings, None, Prep::None, Theme::Dark),
+        step(
+            "settings-nord",
+            Page::Settings,
+            None,
+            Prep::None,
+            Theme::Nord,
+        ),
+        // Last, so the graphs have collected a minute or so of history.
+        step(
+            "resources",
+            Page::Resources,
+            None,
+            Prep::None,
+            Theme::Dracula,
+        ),
+    ];
+    if let Some(last) = v.last_mut() {
+        last.dwell = Duration::from_secs(45);
+    }
+    v
+}
+
+fn resize_tour() -> Vec<Step> {
+    let states = [
+        ("min", Win::Size(900.0, 560.0)),
+        ("large", Win::Size(1600.0, 1000.0)),
+        ("maximized", Win::Maximized),
+        ("fullscreen", Win::Fullscreen),
+        ("restored", Win::Size(1180.0, 760.0)),
+    ];
+    let pages = [
+        ("dashboard", Page::Dashboard, None),
+        ("drivers", Page::Drivers, Some(DriverTab::Installed)),
+        ("services", Page::Services, None),
+        ("resources", Page::Resources, None),
+    ];
+    let mut v = Vec::new();
+    for (sname, win) in states {
+        for (i, (pname, page, tab)) in pages.iter().enumerate() {
+            let name: &'static str = Box::leak(format!("{sname}-{pname}").into_boxed_str());
+            let mut s = step(name, *page, *tab, Prep::None, Theme::Dark);
+            // Change the window once per state, on its first page.
+            if i == 0 {
+                s.win = Some(win);
+            }
+            s.dwell = Duration::from_millis(if i == 0 { 2500 } else { 1500 });
+            v.push(s);
+        }
+    }
+    // Accessibility: high contrast, and 150% scale at the minimum window size.
+    let mut hc = step(
+        "a11y-highcontrast-settings",
         Page::Settings,
         None,
         Prep::None,
-        Theme::Nord,
-    ),
-    // Last, so the graphs have collected a minute or so of history.
-    step(
-        "resources",
-        Page::Resources,
+        Theme::HighContrast,
+    );
+    hc.dwell = Duration::from_millis(1500);
+    v.push(hc);
+    let mut hcd = step(
+        "a11y-highcontrast-drivers",
+        Page::Drivers,
+        Some(DriverTab::Installed),
+        Prep::None,
+        Theme::HighContrast,
+    );
+    hcd.dwell = Duration::from_millis(1500);
+    v.push(hcd);
+    let mut big = step(
+        "a11y-scale150-min-services",
+        Page::Services,
         None,
         Prep::None,
-        Theme::Dracula,
-    ),
-];
+        Theme::Dark,
+    );
+    big.win = Some(Win::Size(900.0, 560.0));
+    big.scale = 1.5;
+    big.dwell = Duration::from_millis(2500);
+    v.push(big);
+    v
+}
 
 pub struct Shots {
     dir: PathBuf,
+    steps: Vec<Step>,
     step: usize,
     started: Option<Instant>,
     requested: bool,
 }
 
 impl Shots {
-    /// Parse `--screenshots <dir>` from the command line.
+    /// Parse `--screenshots <dir>` or `--resize-test <dir>` from the command line.
     pub fn from_args() -> Option<Self> {
         let args: Vec<String> = std::env::args().collect();
-        let i = args.iter().position(|a| a == "--screenshots")?;
+        let (i, steps) = if let Some(i) = args.iter().position(|a| a == "--screenshots") {
+            (i, readme_tour())
+        } else {
+            let i = args.iter().position(|a| a == "--resize-test")?;
+            (i, resize_tour())
+        };
         let dir = PathBuf::from(args.get(i + 1)?);
         Some(Self {
             dir,
+            steps,
             step: 0,
             started: None,
             requested: false,
@@ -132,21 +217,42 @@ fn prep_done(app: &App, prep: Prep) -> bool {
     }
 }
 
+fn apply_window(ctx: &Context, w: Win) {
+    use egui::ViewportCommand as V;
+    match w {
+        Win::Size(x, y) => {
+            ctx.send_viewport_cmd(V::Fullscreen(false));
+            ctx.send_viewport_cmd(V::Maximized(false));
+            ctx.send_viewport_cmd(V::InnerSize(egui::vec2(x, y)));
+        }
+        Win::Maximized => {
+            ctx.send_viewport_cmd(V::Fullscreen(false));
+            ctx.send_viewport_cmd(V::Maximized(true));
+        }
+        Win::Fullscreen => ctx.send_viewport_cmd(V::Fullscreen(true)),
+    }
+}
+
 pub fn tick(app: &mut App, ctx: &Context) {
     let Some(mut s) = app.shots.take() else {
         return;
     };
     ctx.request_repaint();
-    let st = &STEPS[s.step];
+    let st = &s.steps[s.step];
 
     let Some(t0) = s.started else {
-        info!("screenshots: preparing {}", st.name);
+        info!("capture: preparing {}", st.name);
         if let Err(e) = std::fs::create_dir_all(&s.dir) {
-            error!("screenshots: cannot create {}: {e}", s.dir.display());
+            error!("capture: cannot create {}: {e}", s.dir.display());
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             return;
         }
+        if let Some(w) = st.win {
+            info!("capture: window -> {w:?}");
+            apply_window(ctx, w);
+        }
         app.cfg.theme = st.theme; // session only, never saved
+        app.cfg.ui_scale = st.scale;
         app.goto(st.page);
         if let Some(t) = st.tab {
             app.drivers.tab = t;
@@ -172,13 +278,33 @@ pub fn tick(app: &mut App, ctx: &Context) {
             })
         });
         if let Some(img) = shot {
+            let (screen, inner, ppp, maxed, full) = ctx.input(|i| {
+                let vp = i.viewport();
+                (
+                    i.content_rect(),
+                    vp.inner_rect,
+                    i.pixels_per_point,
+                    vp.maximized,
+                    vp.fullscreen,
+                )
+            });
+            info!(
+                "capture: {} image={}x{} content={:?} inner={:?} ppp={ppp} maximized={:?} fullscreen={:?}",
+                st.name,
+                img.width(),
+                img.height(),
+                screen,
+                inner,
+                maxed,
+                full
+            );
             let path = s.dir.join(format!("{}.png", st.name));
             match save_png(&path, &img) {
-                Ok(()) => info!("screenshots: saved {}", path.display()),
-                Err(e) => error!("screenshots: saving {} failed: {e}", path.display()),
+                Ok(()) => info!("capture: saved {}", path.display()),
+                Err(e) => error!("capture: saving {} failed: {e}", path.display()),
             }
-            if s.step + 1 == STEPS.len() {
-                info!("screenshots: done");
+            if s.step + 1 == s.steps.len() {
+                info!("capture: done");
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                 return;
             }
@@ -191,12 +317,7 @@ pub fn tick(app: &mut App, ctx: &Context) {
     }
 
     let waited = t0.elapsed();
-    let min = if s.step + 1 == STEPS.len() {
-        Duration::from_secs(45)
-    } else {
-        Duration::from_secs(3)
-    };
-    let ready = waited >= min && prep_done(app, st.prep);
+    let ready = waited >= st.dwell && prep_done(app, st.prep);
     if ready || waited >= Duration::from_secs(150) {
         ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(egui::UserData::default()));
         s.requested = true;

@@ -1,4 +1,4 @@
-﻿use eframe::egui::{self, Color32, CornerRadius, Pos2, RichText, Sense, Shape, Stroke, Ui, Vec2};
+use eframe::egui::{self, Color32, CornerRadius, Pos2, RichText, Sense, Shape, Stroke, Ui, Vec2};
 
 pub fn severity_color(pct: f32) -> Color32 {
     if pct >= 90.0 {
@@ -13,7 +13,12 @@ pub fn severity_color(pct: f32) -> Color32 {
 /// Circular gauge with a centred percentage and caption underneath.
 pub fn gauge(ui: &mut Ui, title: &str, pct: f32, detail: &str) {
     let size = Vec2::new(150.0, 170.0);
-    let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
+    let (rect, resp) = ui.allocate_exact_size(size, Sense::hover());
+    // Painted shapes are invisible to screen readers; describe the gauge explicitly.
+    let spoken = format!("{title}: {:.0} percent. {detail}", pct.clamp(0.0, 100.0));
+    resp.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::WidgetType::ProgressIndicator, true, &spoken)
+    });
     let painter = ui.painter_at(rect);
     let center = Pos2::new(rect.center().x, rect.top() + 70.0);
     let radius = 56.0;
@@ -72,15 +77,18 @@ pub fn heading(ui: &mut Ui, text: &str) {
 pub fn admin_banner(ui: &mut Ui, elevated: bool, needed: bool) -> bool {
     let mut clicked = false;
     if needed && !elevated {
-        ui.horizontal(|ui| {
-            ui.colored_label(
-                Color32::from_rgb(0xf5, 0xa6, 0x23),
-                "Some actions on this page need administrator rights.",
-            );
-            if ui.add(primary_btn(ui, "Restart as admin")).clicked() {
-                clicked = true;
-            }
-        });
+        let msg = "Some actions on this page need administrator rights.";
+        let color = ui.visuals().warn_fg_color;
+        // Side by side when there is room (about 600 points), stacked otherwise.
+        if ui.available_width() >= 600.0 {
+            ui.horizontal(|ui| {
+                ui.colored_label(color, msg);
+                clicked = ui.add(primary_btn(ui, "Restart as admin")).clicked();
+            });
+        } else {
+            ui.colored_label(color, msg);
+            clicked = ui.add(primary_btn(ui, "Restart as admin")).clicked();
+        }
         ui.add_space(4.0);
     }
     clicked
@@ -156,6 +164,7 @@ impl egui::Widget for FilledButton {
             w.active.expansion = 0.5;
             ui.add(
                 egui::Button::new(RichText::new(self.text).strong().color(ink))
+                    .wrap_mode(egui::TextWrapMode::Extend)
                     .min_size(Vec2::new(96.0, 34.0)),
             )
             .on_hover_cursor(egui::CursorIcon::PointingHand)

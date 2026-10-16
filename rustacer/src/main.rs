@@ -32,7 +32,14 @@ fn main() -> eframe::Result<()> {
         rustacer_core::admin::is_elevated()
     );
 
+    let capture_run = std::env::args()
+        .any(|a| a == "--screenshots" || a == "--resize-test" || a == "--smoke-test");
     let options = eframe::NativeOptions {
+        // Remember size, position and maximized state between launches
+        // (stored by eframe under %APPDATA%\Rustacer\data). Test/capture runs never persist.
+        persist_window: !capture_run,
+        // Test/capture runs keep egui state (zoom, table widths) out of the real profile.
+        persistence_path: capture_run.then(|| std::env::temp_dir().join("rustacer-test-state.ron")),
         viewport: eframe::egui::ViewportBuilder::default()
             .with_title("Rustacer")
             .with_inner_size(if std::env::args().any(|a| a == "--screenshots") {
