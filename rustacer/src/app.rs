@@ -186,6 +186,7 @@ pub struct DriversState {
     pub filter: String,
     pub only_old: bool,
     pub updates: Vec<(DriverUpdate, bool)>,
+    pub show_all_updates: bool,
     pub scanning: bool,
     pub scanned_once: bool,
     pub scan_progress: Option<Progress>,
@@ -429,7 +430,7 @@ impl App {
                 Msg::InstallProgress(p) => self.drivers.install_progress = Some(p),
                 Msg::RestorePoint(o) => match o {
                     RestoreOutcome::Created { .. } => {
-                        self.notify(false, "System Restore point created.");
+                        self.notify(false, "System Restore accepted the restore point request.");
                     }
                     RestoreOutcome::Failed(why) => self.drivers.restore_prompt = Some(why),
                 },
@@ -853,10 +854,12 @@ fn dirs_documents() -> String {
 pub fn toast(title: &str, body: &str) {
     let (t, b) = (title.to_string(), body.to_string());
     std::thread::spawn(move || {
-        let _ = tauri_winrt_notification::Toast::new(tauri_winrt_notification::Toast::POWERSHELL_APP_ID)
-            .title(&t)
-            .text1(&b)
-            .show();
+        let _ = tauri_winrt_notification::Toast::new(
+            tauri_winrt_notification::Toast::POWERSHELL_APP_ID,
+        )
+        .title(&t)
+        .text1(&b)
+        .show();
     });
 }
 

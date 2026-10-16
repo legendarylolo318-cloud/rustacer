@@ -637,10 +637,25 @@ fn drivers_updates(app: &mut App, ui: &mut Ui) {
         }
         return;
     }
-    let n_sel = app.drivers.updates.iter().filter(|(_, c)| *c).count();
+    use wua::UpdateStatus;
+    let visible: Vec<usize> = app
+        .drivers
+        .updates
+        .iter()
+        .enumerate()
+        .filter(|(_, (u, _))| app.drivers.show_all_updates || wua::status(u) == UpdateStatus::Newer)
+        .map(|(i, _)| i)
+        .collect();
+    let hidden = app.drivers.updates.len() - visible.len();
+    let n_sel = visible
+        .iter()
+        .filter(|&&i| app.drivers.updates[i].1)
+        .count();
     ui.horizontal(|ui| {
         if ui.button("Select all").clicked() {
-            app.drivers.updates.iter_mut().for_each(|(_, c)| *c = true);
+            for &i in &visible {
+                app.drivers.updates[i].1 = true;
+            }
         }
         if ui.button("Select none").clicked() {
             app.drivers.updates.iter_mut().for_each(|(_, c)| *c = false);
@@ -653,36 +668,59 @@ fn drivers_updates(app: &mut App, ui: &mut Ui) {
             .clicked()
         {
             install = Some(
-                app.drivers
-                    .updates
+                visible
                     .iter()
-                    .filter(|(_, c)| *c)
-                    .map(|(u, _)| u.clone())
+                    .filter(|&&i| app.drivers.updates[i].1)
+                    .map(|&i| app.drivers.updates[i].0.clone())
                     .collect(),
             );
         }
+        if ui
+            .checkbox(
+                &mut app.drivers.show_all_updates,
+                format!("Show offers that are not newer ({hidden} hidden)"),
+            )
+            .changed()
+            && !app.drivers.show_all_updates
+        {
+            // Never keep a hidden row selected.
+            for (u, c) in app.drivers.updates.iter_mut() {
+                if wua::status(u) != UpdateStatus::Newer {
+                    *c = false;
+                }
+            }
+        }
     });
+    if visible.is_empty() {
+        ui.label(
+            "Every driver Windows Update offers is the same as or older than what is installed.",
+        );
+        return;
+    }
     TableBuilder::new(ui)
         .striped(true)
         .resizable(true)
         .column(Column::exact(30.0))
-        .column(Column::initial(200.0).clip(true))
-        .column(Column::initial(100.0).clip(true))
-        .column(Column::initial(100.0).clip(true))
+        .column(Column::initial(190.0).clip(true))
+        .column(Column::initial(120.0))
+        .column(Column::initial(110.0).clip(true))
+        .column(Column::initial(110.0).clip(true))
         .column(Column::initial(90.0))
-        .column(Column::initial(70.0))
+        .column(Column::initial(80.0))
         .column(Column::remainder().clip(true))
         .header(ROW_H, |mut h| {
-            for t in ["", "Device", "Current", "New", "Date", "Size", "Title"] {
+            for t in [
+                "", "Device", "Status", "Current", "New", "Date", "Size", "Title",
+            ] {
                 h.col(|ui| {
                     ui.strong(t);
                 });
             }
         })
         .body(|body| {
-            let n = app.drivers.updates.len();
-            body.rows(ROW_H, n, |mut row| {
-                let (u, c) = &mut app.drivers.updates[row.index()];
+            body.rows(ROW_H, visible.len(), |mut row| {
+                let (u, c) = &mut app.drivers.updates[visible[row.index()]];
+                let st = wua::status(u);
                 row.col(|ui| {
                     ui.checkbox(c, "");
                 });
@@ -692,6 +730,14 @@ fn drivers_updates(app: &mut App, ui: &mut Ui) {
                     } else {
                         &u.device_name
                     });
+                });
+                row.col(|ui| {
+                    let color = match st {
+                        UpdateStatus::Newer => Color32::from_rgb(0x3d, 0xb8, 0x6b),
+                        UpdateStatus::Older => Color32::from_rgb(0xe5, 0x48, 0x4d),
+                        _ => Color32::from_rgb(0xf5, 0xa6, 0x23),
+                    };
+                    ui.colored_label(color, st.label());
                 });
                 row.col(|ui| {
                     ui.label(if u.current_version.is_empty() {
@@ -719,12 +765,29 @@ fn drivers_updates(app: &mut App, ui: &mut Ui) {
             });
         });
     if let Some(list) = install {
-        let titles: Vec<String> = list.iter().map(|u| format!("- {}", u.title)).collect();
-        let warn = if app.elevated {
-            None
-        } else {
-            Some("Installing requires administrator rights. Restart as admin first.".to_string())
-        };
+        if !app.elevated {
+            app.notify(
+                true,
+                "Installing drivers requires administrator rights. Use \"Restart as admin\" first.",
+            );
+            return;
+        }
+        let titles: Vec<String> = list
+            .iter()
+            .map(|u| format!("- {} [{}]", u.title, wua::status(u).label()))
+            .collect();
+        let risky: Vec<&str> = list
+            .iter()
+            .filter(|u| wua::status(u) != UpdateStatus::Newer)
+            .map(|u| u.title.as_str())
+            .collect();
+        let warn = (!risky.is_empty()).then(|| {
+            format!(
+                "{} selected update(s) are NOT newer than the installed driver (same version, downgrade or unknown):\n- {}",
+                risky.len(),
+                risky.join("\n- ")
+            )
+        });
         app.ask(
             "Install driver updates",
             format!(
