@@ -58,7 +58,10 @@ pub fn detect_gpus(drivers: &[InstalledDriver]) -> Vec<GpuDriver> {
         .iter()
         .filter(|d| d.device_class.eq_ignore_ascii_case("DISPLAY"))
         .filter_map(|d| {
-            let vendor = detect_vendor(&format!("{} {} {}", d.device_name, d.provider, d.manufacturer))?;
+            let vendor = detect_vendor(&format!(
+                "{} {} {}",
+                d.device_name, d.provider, d.manufacturer
+            ))?;
             Some(GpuDriver {
                 vendor,
                 name: d.device_name.clone(),
@@ -72,7 +75,9 @@ pub fn detect_gpus(drivers: &[InstalledDriver]) -> Vec<GpuDriver> {
 pub fn open_official_page(vendor: GpuVendor) -> Result<()> {
     let url = vendor.official_url();
     if !url.starts_with("https://") {
-        return Err(CoreError::Blocked("Only https vendor pages may be opened.".into()));
+        return Err(CoreError::Blocked(
+            "Only https vendor pages may be opened.".into(),
+        ));
     }
     open_path(url)
 }
@@ -83,9 +88,15 @@ mod tests {
 
     #[test]
     fn vendor_detection() {
-        assert_eq!(detect_vendor("NVIDIA GeForce RTX 4070"), Some(GpuVendor::Nvidia));
+        assert_eq!(
+            detect_vendor("NVIDIA GeForce RTX 4070"),
+            Some(GpuVendor::Nvidia)
+        );
         assert_eq!(detect_vendor("AMD Radeon RX 7800"), Some(GpuVendor::Amd));
-        assert_eq!(detect_vendor("Intel(R) UHD Graphics"), Some(GpuVendor::Intel));
+        assert_eq!(
+            detect_vendor("Intel(R) UHD Graphics"),
+            Some(GpuVendor::Intel)
+        );
         assert_eq!(detect_vendor("Microsoft Basic Display Adapter"), None);
     }
 

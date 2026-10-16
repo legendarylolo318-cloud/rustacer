@@ -62,12 +62,9 @@ impl ProcessMonitor {
 
     pub fn refresh(&mut self) -> Vec<ProcessInfo> {
         self.sys.refresh_processes(ProcessesToUpdate::All, true);
-        let cores = self.sys.cpus().len().max(1) as f32;
-        let cores = if cores <= 1.0 {
-            std::thread::available_parallelism().map(|n| n.get() as f32).unwrap_or(1.0)
-        } else {
-            cores
-        };
+        let cores = std::thread::available_parallelism()
+            .map(|n| n.get() as f32)
+            .unwrap_or(1.0);
         self.sys
             .processes()
             .iter()
@@ -147,7 +144,9 @@ fn guard(pid: u32, name: &str) -> Result<()> {
             "'{name}' is a critical system process and cannot be ended."
         )))
     } else if pid == std::process::id() {
-        Err(CoreError::Blocked("Rustacer will not end itself from here.".into()))
+        Err(CoreError::Blocked(
+            "Rustacer will not end itself from here.".into(),
+        ))
     } else {
         Ok(())
     }

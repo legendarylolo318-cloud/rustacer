@@ -42,14 +42,18 @@ pub fn hresult_message(hr: i32, os_message: &str) -> String {
         0x8007_05B4 => Some("The operation timed out"),
         0x8024_0004 => Some("Windows Update: no network or service unavailable"),
         0x8024_001E => Some("Windows Update: service is shutting down"),
-        0x8024_402C => Some("Windows Update: could not reach the update server (check proxy/network)"),
+        0x8024_402C => {
+            Some("Windows Update: could not reach the update server (check proxy/network)")
+        }
         0x8024_402F => Some("Windows Update: connection to the update server was interrupted"),
         0x8024_0024 => Some("Windows Update: no updates found"),
         0x8024_0022 => Some("Windows Update: all updates failed to download or install"),
         0x8024_AFFF => Some("Windows Update: unexpected agent error"),
         0x8024_0009 => Some("Windows Update: the operation was cancelled"),
         0x8024_000B => Some("Windows Update: the operation was cancelled"),
-        0x8024_0016 => Some("Windows Update: another installation is in progress or a reboot is pending"),
+        0x8024_0016 => {
+            Some("Windows Update: another installation is in progress or a reboot is pending")
+        }
         _ => None,
     };
     match known {

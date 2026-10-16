@@ -1,4 +1,4 @@
-﻿//! Startup apps: Run/RunOnce keys, Startup folders and logon scheduled tasks.
+//! Startup apps: Run/RunOnce keys, Startup folders and logon scheduled tasks.
 //! Disabling uses the same `StartupApproved` mechanism as Task Manager so it is reversible.
 
 use crate::admin::is_elevated;
@@ -43,7 +43,11 @@ impl Source {
     pub fn label(&self) -> String {
         match self {
             Source::Run { hive, wow32 } => {
-                format!("{} Run{}", hive.label(), if *wow32 { " (32-bit)" } else { "" })
+                format!(
+                    "{} Run{}",
+                    hive.label(),
+                    if *wow32 { " (32-bit)" } else { "" }
+                )
             }
             Source::RunOnce { hive } => format!("{} RunOnce", hive.label()),
             Source::Folder { common: false } => "Startup folder (user)".into(),
@@ -54,9 +58,12 @@ impl Source {
     pub fn needs_admin(&self) -> bool {
         matches!(
             self,
-            Source::Run { hive: Hive::Machine, .. }
-                | Source::RunOnce { hive: Hive::Machine }
-                | Source::Folder { common: true }
+            Source::Run {
+                hive: Hive::Machine,
+                ..
+            } | Source::RunOnce {
+                hive: Hive::Machine
+            } | Source::Folder { common: true }
                 | Source::Task
         )
     }
@@ -128,7 +135,9 @@ fn read_approved(hive: Hive, sub: &str) -> HashMap<String, Vec<u8>> {
 
 fn set_approved(source: &Source, name: &str, enabled: bool) -> Result<()> {
     let Some((hive, sub)) = approved_subkey(source) else {
-        return Err(CoreError::Message("This entry type has no enable/disable flag.".into()));
+        return Err(CoreError::Message(
+            "This entry type has no enable/disable flag.".into(),
+        ));
     };
     let (k, _) = hive
         .root()
@@ -191,7 +200,10 @@ fn folder_entries(common: bool) -> Vec<StartupEntry> {
         return vec![];
     };
     let source = Source::Folder { common };
-    let approved = read_approved(if common { Hive::Machine } else { Hive::User }, "StartupFolder");
+    let approved = read_approved(
+        if common { Hive::Machine } else { Hive::User },
+        "StartupFolder",
+    );
     let mut out = vec![];
     if let Ok(rd) = std::fs::read_dir(dir) {
         for e in rd.flatten() {
@@ -199,7 +211,10 @@ fn folder_entries(common: bool) -> Vec<StartupEntry> {
             if name.eq_ignore_ascii_case("desktop.ini") {
                 continue;
             }
-            let enabled = approved.get(&name.to_lowercase()).map(|b| parse_approved(b)).unwrap_or(true);
+            let enabled = approved
+                .get(&name.to_lowercase())
+                .map(|b| parse_approved(b))
+                .unwrap_or(true);
             out.push(StartupEntry {
                 command: e.path().to_string_lossy().into_owned(),
                 location: e.path().to_string_lossy().into_owned(),
@@ -224,7 +239,11 @@ pub fn list_entries() -> Vec<StartupEntry> {
             all.extend(build_entries(read_run_values(hive, RUN_WOW), src, &ap));
         }
         let src = Source::RunOnce { hive };
-        all.extend(build_entries(read_run_values(hive, RUNONCE), src.clone(), &HashMap::new()));
+        all.extend(build_entries(
+            read_run_values(hive, RUNONCE),
+            src.clone(),
+            &HashMap::new(),
+        ));
         // RunOnce entries parked by Rustacer's own disable.
         let parked = read_run_values(Hive::User, &format!(r"{RUNONCE_DISABLED}\{}", hive.label()));
         for mut e in build_entries(parked, src, &HashMap::new()) {
@@ -280,13 +299,21 @@ pub fn set_enabled(e: &StartupEntry, enabled: bool) -> Result<()> {
                 .root()
                 .create_subkey(&to_path)
                 .map_err(|e| CoreError::Windows(e.to_string()))?;
-            let v: String = from.get_value(&e.name).map_err(|x| CoreError::Windows(x.to_string()))?;
-            to.set_value(&e.name, &v).map_err(|x| CoreError::Windows(x.to_string()))?;
-            from.delete_value(&e.name).map_err(|x| CoreError::Windows(x.to_string()))?;
+            let v: String = from
+                .get_value(&e.name)
+                .map_err(|x| CoreError::Windows(x.to_string()))?;
+            to.set_value(&e.name, &v)
+                .map_err(|x| CoreError::Windows(x.to_string()))?;
+            from.delete_value(&e.name)
+                .map_err(|x| CoreError::Windows(x.to_string()))?;
         }
         other => set_approved(other, &e.name, enabled)?,
     }
-    info!("startup entry '{}' {}", e.name, if enabled { "enabled" } else { "disabled" });
+    info!(
+        "startup entry '{}' {}",
+        e.name,
+        if enabled { "enabled" } else { "disabled" }
+    );
     Ok(())
 }
 
@@ -303,15 +330,18 @@ pub fn delete_entry(e: &StartupEntry) -> Result<()> {
                 .root()
                 .open_subkey_with_flags(format!(r"{RUNONCE_DISABLED}\{}", hive.label()), KEY_WRITE)
                 .map_err(|x| CoreError::Windows(x.to_string()))?;
-            k.delete_value(&e.name).map_err(|x| CoreError::Windows(x.to_string()))?;
+            k.delete_value(&e.name)
+                .map_err(|x| CoreError::Windows(x.to_string()))?;
         }
         src => {
-            let (hive, path) = run_path(src).ok_or_else(|| CoreError::Message("Unsupported entry".into()))?;
+            let (hive, path) =
+                run_path(src).ok_or_else(|| CoreError::Message("Unsupported entry".into()))?;
             let k = hive
                 .root()
                 .open_subkey_with_flags(path, KEY_WRITE)
                 .map_err(|x| CoreError::Windows(x.to_string()))?;
-            k.delete_value(&e.name).map_err(|x| CoreError::Windows(x.to_string()))?;
+            k.delete_value(&e.name)
+                .map_err(|x| CoreError::Windows(x.to_string()))?;
             let _ = clear_approved(e);
         }
     }
@@ -349,7 +379,8 @@ pub fn add_user_entry(name: &str, exe: &str, args: &str) -> Result<()> {
         .root()
         .create_subkey(RUN)
         .map_err(|e| CoreError::Windows(e.to_string()))?;
-    k.set_value(name, &cmd).map_err(|e| CoreError::Windows(e.to_string()))?;
+    k.set_value(name, &cmd)
+        .map_err(|e| CoreError::Windows(e.to_string()))?;
     info!("added startup entry '{name}' -> {cmd}");
     Ok(())
 }
@@ -394,7 +425,12 @@ mod tasks {
         // SAFETY: COM initialised by the caller's ComGuard.
         unsafe {
             let svc: ITaskService = CoCreateInstance(&TaskScheduler, None, CLSCTX_INPROC_SERVER)?;
-            svc.Connect(&VARIANT::default(), &VARIANT::default(), &VARIANT::default(), &VARIANT::default())?;
+            svc.Connect(
+                &VARIANT::default(),
+                &VARIANT::default(),
+                &VARIANT::default(),
+                &VARIANT::default(),
+            )?;
             Ok(svc)
         }
     }
@@ -409,7 +445,9 @@ mod tasks {
             }
             let tasks = folder.GetTasks(1)?; // TASK_ENUM_HIDDEN
             for i in 1..=tasks.Count()? {
-                let Ok(task) = tasks.get_Item(&VARIANT::from(i)) else { continue };
+                let Ok(task) = tasks.get_Item(&VARIANT::from(i)) else {
+                    continue;
+                };
                 let Ok(def) = task.Definition() else { continue };
                 let Ok(trigs) = def.Triggers() else { continue };
                 let mut logon = false;
@@ -524,7 +562,14 @@ mod tests {
         let mut ap = HashMap::new();
         ap.insert("spotify".to_string(), make_approved(false, 1));
         ap.insert("onedrive".to_string(), make_approved(true, 0));
-        let e = build_entries(raw, Source::Run { hive: Hive::User, wow32: false }, &ap);
+        let e = build_entries(
+            raw,
+            Source::Run {
+                hive: Hive::User,
+                wow32: false,
+            },
+            &ap,
+        );
         assert!(e[0].enabled);
         assert!(!e[1].enabled);
         assert!(e[2].enabled, "no approval record means enabled");
@@ -533,8 +578,15 @@ mod tests {
     #[test]
     fn admin_requirements() {
         assert!(Source::Task.needs_admin());
-        assert!(!Source::Run { hive: Hive::User, wow32: false }.needs_admin());
-        assert!(Source::Run { hive: Hive::Machine, wow32: true }.needs_admin());
+        assert!(!Source::Run {
+            hive: Hive::User,
+            wow32: false
+        }
+        .needs_admin());
+        assert!(Source::Run {
+            hive: Hive::Machine,
+            wow32: true
+        }
+        .needs_admin());
     }
 }
-

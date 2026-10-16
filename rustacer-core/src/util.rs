@@ -48,7 +48,10 @@ impl ComGuard {
             if hr.0 as u32 == 0x8001_0106 {
                 Ok(Self { initialised: false })
             } else {
-                Err(CoreError::Windows(format!("COM init failed (0x{:08X})", hr.0 as u32)))
+                Err(CoreError::Windows(format!(
+                    "COM init failed (0x{:08X})",
+                    hr.0 as u32
+                )))
             }
         }
     }

@@ -77,7 +77,11 @@ impl Date {
         if !d.chars().all(|c| c.is_ascii_digit()) {
             return None;
         }
-        Date::new(d[0..4].parse().ok()?, d[4..6].parse().ok()?, d[6..8].parse().ok()?)
+        Date::new(
+            d[0..4].parse().ok()?,
+            d[4..6].parse().ok()?,
+            d[6..8].parse().ok()?,
+        )
     }
 
     /// OLE automation date (days since 1899-12-30), as returned by WUA.
@@ -144,7 +148,10 @@ mod tests {
 
     #[test]
     fn parses_versions() {
-        assert_eq!(DriverVersion::parse("31.0.101.5186").unwrap().0, vec![31, 0, 101, 5186]);
+        assert_eq!(
+            DriverVersion::parse("31.0.101.5186").unwrap().0,
+            vec![31, 0, 101, 5186]
+        );
         assert!(DriverVersion::parse("").is_none());
         assert!(DriverVersion::parse("1.x.3").is_none());
     }
@@ -154,7 +161,10 @@ mod tests {
         use Ordering::*;
         assert_eq!(compare_versions("10.0.9", "10.0.10"), Some(Less));
         assert_eq!(compare_versions("2.0", "2.0.0.0"), Some(Equal));
-        assert_eq!(compare_versions("31.0.101.5186", "31.0.101.4502"), Some(Greater));
+        assert_eq!(
+            compare_versions("31.0.101.5186", "31.0.101.4502"),
+            Some(Greater)
+        );
         assert_eq!(compare_versions("abc", "1.0"), None);
     }
 
@@ -169,7 +179,10 @@ mod tests {
 
     #[test]
     fn parses_cim_dates() {
-        assert_eq!(Date::parse_cim("20230615000000.000000-000"), Date::new(2023, 6, 15));
+        assert_eq!(
+            Date::parse_cim("20230615000000.000000-000"),
+            Date::new(2023, 6, 15)
+        );
         assert!(Date::parse_cim("garbage").is_none());
         assert!(Date::parse_cim("20231315000000.000000-000").is_none());
     }

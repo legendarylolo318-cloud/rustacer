@@ -200,7 +200,9 @@ fn state_from(cur: SERVICE_STATUS_CURRENT_STATE) -> ServiceState {
         SERVICE_RUNNING => ServiceState::Running,
         SERVICE_STOPPED => ServiceState::Stopped,
         SERVICE_PAUSED => ServiceState::Paused,
-        SERVICE_START_PENDING | SERVICE_STOP_PENDING | SERVICE_CONTINUE_PENDING
+        SERVICE_START_PENDING
+        | SERVICE_STOP_PENDING
+        | SERVICE_CONTINUE_PENDING
         | SERVICE_PAUSE_PENDING => ServiceState::Pending,
         _ => ServiceState::Unknown,
     }
@@ -259,8 +261,13 @@ fn read_details(scm: &ScHandle, name: &str) -> (StartType, String) {
         let _ = QueryServiceConfig2W(svc.0, SERVICE_CONFIG_DESCRIPTION, None, &mut needed);
         if needed > 0 {
             let mut buf = vec![0u8; needed as usize];
-            if QueryServiceConfig2W(svc.0, SERVICE_CONFIG_DESCRIPTION, Some(&mut buf), &mut needed)
-                .is_ok()
+            if QueryServiceConfig2W(
+                svc.0,
+                SERVICE_CONFIG_DESCRIPTION,
+                Some(&mut buf),
+                &mut needed,
+            )
+            .is_ok()
             {
                 let d = &*(buf.as_ptr() as *const SERVICE_DESCRIPTIONW);
                 desc = pwstr_to_string(d.lpDescription);
@@ -322,7 +329,11 @@ pub fn list_services() -> Result<Vec<ServiceInfo>> {
             });
         }
     }
-    out.sort_by(|a, b| a.display_name.to_lowercase().cmp(&b.display_name.to_lowercase()));
+    out.sort_by(|a, b| {
+        a.display_name
+            .to_lowercase()
+            .cmp(&b.display_name.to_lowercase())
+    });
     Ok(out)
 }
 
@@ -375,7 +386,11 @@ pub fn set_start_type(name: &str, t: StartType) -> Result<()> {
         StartType::Automatic | StartType::AutomaticDelayed => SERVICE_AUTO_START,
         StartType::Manual => SERVICE_DEMAND_START,
         StartType::Disabled => SERVICE_DISABLED,
-        _ => return Err(CoreError::Blocked("That start type cannot be set here.".into())),
+        _ => {
+            return Err(CoreError::Blocked(
+                "That start type cannot be set here.".into(),
+            ))
+        }
     };
     // SAFETY: SERVICE_NO_CHANGE / null leave other fields untouched.
     unsafe {

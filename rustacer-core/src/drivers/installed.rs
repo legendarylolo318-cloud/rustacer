@@ -78,9 +78,16 @@ pub fn list_installed() -> Result<Vec<InstalledDriver>> {
 pub fn matches_filter(d: &InstalledDriver, query: &str) -> bool {
     let q = query.trim().to_lowercase();
     q.is_empty()
-        || [&d.device_name, &d.device_class, &d.provider, &d.manufacturer, &d.version, &d.inf_name]
-            .iter()
-            .any(|f| f.to_lowercase().contains(&q))
+        || [
+            &d.device_name,
+            &d.device_class,
+            &d.provider,
+            &d.manufacturer,
+            &d.version,
+            &d.inf_name,
+        ]
+        .iter()
+        .any(|f| f.to_lowercase().contains(&q))
 }
 
 #[cfg(test)]

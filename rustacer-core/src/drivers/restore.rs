@@ -1,4 +1,4 @@
-﻿//! System Restore point creation via SRSetRestorePointW.
+//! System Restore point creation via SRSetRestorePointW.
 
 use crate::admin::is_elevated;
 use windows::Win32::System::Restore::{
@@ -12,7 +12,9 @@ const DEVICE_DRIVER_INSTALL: u32 = 10;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RestoreOutcome {
-    Created { sequence: i64 },
+    Created {
+        sequence: i64,
+    },
     /// Could not create one; the message explains why (System Protection off, throttled, ...).
     Failed(String),
 }
@@ -39,7 +41,7 @@ pub fn create_restore_point(description: &str) -> RestoreOutcome {
     if !is_elevated() {
         return RestoreOutcome::Failed("administrator rights are required".into());
     }
-    let mut info = RESTOREPOINTINFOW {
+    let info = RESTOREPOINTINFOW {
         dwEventType: RESTOREPOINTINFO_EVENT_TYPE(BEGIN_SYSTEM_CHANGE),
         dwRestorePtType: RESTOREPOINTINFO_TYPE(DEVICE_DRIVER_INSTALL),
         llSequenceNumber: 0,
@@ -47,7 +49,7 @@ pub fn create_restore_point(description: &str) -> RestoreOutcome {
     };
     let mut status = STATEMGRSTATUS::default();
     // SAFETY: both structs are valid for the duration of the call.
-    let ok = unsafe { SRSetRestorePointW(&mut info, &mut status) };
+    let ok = unsafe { SRSetRestorePointW(&info, &mut status) };
     let (code, seq) = ({ status.nStatus }.0, { status.llSequenceNumber });
     if ok.as_bool() && code == 0 {
         RestoreOutcome::Created { sequence: seq }
@@ -58,7 +60,7 @@ pub fn create_restore_point(description: &str) -> RestoreOutcome {
 
 /// Close the restore point opened by `create_restore_point`.
 pub fn finish_restore_point(sequence: i64) {
-    let mut info = RESTOREPOINTINFOW {
+    let info = RESTOREPOINTINFOW {
         dwEventType: RESTOREPOINTINFO_EVENT_TYPE(END_SYSTEM_CHANGE),
         dwRestorePtType: RESTOREPOINTINFO_TYPE(DEVICE_DRIVER_INSTALL),
         llSequenceNumber: sequence,
@@ -66,7 +68,7 @@ pub fn finish_restore_point(sequence: i64) {
     };
     let mut status = STATEMGRSTATUS::default();
     // SAFETY: both structs are valid for the duration of the call.
-    let _ = unsafe { SRSetRestorePointW(&mut info, &mut status) };
+    let _ = unsafe { SRSetRestorePointW(&info, &mut status) };
 }
 
 #[cfg(test)]
@@ -87,4 +89,3 @@ mod tests {
         assert_eq!(d[255], 0);
     }
 }
-

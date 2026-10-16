@@ -42,7 +42,12 @@ pub fn format_install_date(raw: &str) -> String {
 
 /// Convert raw values to an entry; returns None for keys without a display name.
 pub fn parse_entry(key_name: &str, raw: &RawApp, source: &str) -> Option<AppEntry> {
-    let get = |k: &str| raw.strings.get(k).map(|s| s.trim().to_string()).unwrap_or_default();
+    let get = |k: &str| {
+        raw.strings
+            .get(k)
+            .map(|s| s.trim().to_string())
+            .unwrap_or_default()
+    };
     let name = get("DisplayName");
     if name.is_empty() {
         return None;
@@ -75,7 +80,9 @@ fn read_hive(root: RegKey, path: &str, source: &str, out: &mut Vec<AppEntry>) {
         return;
     };
     for sub in key.enum_keys().flatten() {
-        let Ok(k) = key.open_subkey(&sub) else { continue };
+        let Ok(k) = key.open_subkey(&sub) else {
+            continue;
+        };
         let mut raw = RawApp::default();
         for (n, _) in k.enum_values().flatten() {
             if let Ok(s) = k.get_value::<String, _>(&n) {
@@ -95,7 +102,12 @@ pub fn list_installed() -> Vec<AppEntry> {
     const P32: &str = r"SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall";
     let mut out = Vec::new();
     read_hive(RegKey::predef(HKEY_LOCAL_MACHINE), P, "HKLM", &mut out);
-    read_hive(RegKey::predef(HKEY_LOCAL_MACHINE), P32, "HKLM (32-bit)", &mut out);
+    read_hive(
+        RegKey::predef(HKEY_LOCAL_MACHINE),
+        P32,
+        "HKLM (32-bit)",
+        &mut out,
+    );
     read_hive(RegKey::predef(HKEY_CURRENT_USER), P, "HKCU", &mut out);
     out.sort_by_key(|a| a.name.to_lowercase());
     out
@@ -109,11 +121,18 @@ pub fn uninstall(app: &AppEntry, quiet: bool) -> Result<()> {
         &app.uninstall_string
     };
     if cmd.trim().is_empty() {
-        return Err(CoreError::Message(format!("'{}' has no uninstall command.", app.name)));
+        return Err(CoreError::Message(format!(
+            "'{}' has no uninstall command.",
+            app.name
+        )));
     }
     let (prog, args) = split_command_line(cmd);
     info!("launching uninstaller for '{}': {cmd}", app.name);
-    shell_execute("open", &prog, if args.is_empty() { None } else { Some(&args) })
+    shell_execute(
+        "open",
+        &prog,
+        if args.is_empty() { None } else { Some(&args) },
+    )
 }
 
 // ---------- winget (optional) ----------
@@ -126,12 +145,17 @@ pub struct WingetApp {
 }
 
 pub fn winget_available() -> bool {
-    run_hidden("winget", &["--version"]).map(|(c, _)| c == 0).unwrap_or(false)
+    run_hidden("winget", &["--version"])
+        .map(|(c, _)| c == 0)
+        .unwrap_or(false)
 }
 
 pub fn parse_winget_list(text: &str) -> Vec<WingetApp> {
     let lines: Vec<&str> = text.lines().collect();
-    let Some(h) = lines.iter().position(|l| l.trim_start().starts_with("Name") && l.contains("Id")) else {
+    let Some(h) = lines
+        .iter()
+        .position(|l| l.trim_start().starts_with("Name") && l.contains("Id"))
+    else {
         return vec![];
     };
     let header: Vec<char> = lines[h].chars().collect();
@@ -139,9 +163,16 @@ pub fn parse_winget_list(text: &str) -> Vec<WingetApp> {
     let (Some(id_c), Some(ver_c)) = (col("Id"), col("Version")) else {
         return vec![];
     };
-    let end_ver = col("Available").or_else(|| col("Source")).unwrap_or(header.len().max(ver_c + 1));
+    let end_ver = col("Available")
+        .or_else(|| col("Source"))
+        .unwrap_or(header.len().max(ver_c + 1));
     let slice = |l: &str, a: usize, b: usize| -> String {
-        l.chars().skip(a).take(b.saturating_sub(a)).collect::<String>().trim().to_string()
+        l.chars()
+            .skip(a)
+            .take(b.saturating_sub(a))
+            .collect::<String>()
+            .trim()
+            .to_string()
     };
     lines
         .iter()
@@ -159,7 +190,11 @@ pub fn parse_winget_list(text: &str) -> Vec<WingetApp> {
 pub fn list_winget() -> Result<Vec<WingetApp>> {
     let (code, out) = run_hidden(
         "winget",
-        &["list", "--disable-interactivity", "--accept-source-agreements"],
+        &[
+            "list",
+            "--disable-interactivity",
+            "--accept-source-agreements",
+        ],
     )?;
     if code != 0 {
         return Err(CoreError::Message("winget list failed.".into()));
@@ -172,7 +207,11 @@ pub fn winget_uninstall(id: &str) -> Result<()> {
         return Err(CoreError::Blocked("Invalid winget package id.".into()));
     }
     info!("winget uninstall {id}");
-    shell_execute("open", "winget", Some(&format!("uninstall --id {id} --exact")))
+    shell_execute(
+        "open",
+        "winget",
+        Some(&format!("uninstall --id {id} --exact")),
+    )
 }
 
 #[cfg(test)]
@@ -181,7 +220,10 @@ mod tests {
 
     fn raw(strings: &[(&str, &str)], dwords: &[(&str, u32)]) -> RawApp {
         RawApp {
-            strings: strings.iter().map(|(a, b)| (a.to_string(), b.to_string())).collect(),
+            strings: strings
+                .iter()
+                .map(|(a, b)| (a.to_string(), b.to_string()))
+                .collect(),
             dwords: dwords.iter().map(|(a, b)| (a.to_string(), *b)).collect(),
         }
     }
@@ -206,7 +248,13 @@ mod tests {
 
     #[test]
     fn flags_updates_and_components() {
-        let u = raw(&[("DisplayName", "Update for X"), ("ParentKeyName", "OperatingSystem")], &[]);
+        let u = raw(
+            &[
+                ("DisplayName", "Update for X"),
+                ("ParentKeyName", "OperatingSystem"),
+            ],
+            &[],
+        );
         assert!(parse_entry("KB123", &u, "HKLM").unwrap().is_update);
         let s = raw(&[("DisplayName", "Runtime")], &[("SystemComponent", 1)]);
         assert!(parse_entry("rt", &s, "HKLM").unwrap().is_system_component);

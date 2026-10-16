@@ -140,7 +140,7 @@ impl Sampler {
         self.nets.refresh(true);
 
         let (mut rx, mut tx) = (0u64, 0u64);
-        for (_, n) in self.nets.iter() {
+        for n in self.nets.values() {
             rx += n.received();
             tx += n.transmitted();
         }
@@ -199,7 +199,11 @@ pub fn exceeded_alerts(s: &Snapshot, cpu: f32, ram: f32, disk: f32) -> Vec<Strin
     }
     for d in &s.disks {
         if d.used_percent() >= disk {
-            v.push(format!("Drive {} is {:.0}% full", d.mount, d.used_percent()));
+            v.push(format!(
+                "Drive {} is {:.0}% full",
+                d.mount,
+                d.used_percent()
+            ));
         }
     }
     v

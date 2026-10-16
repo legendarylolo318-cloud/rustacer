@@ -76,12 +76,14 @@ pub fn result_code_ok(code: i32) -> bool {
 
 /// Combine a result code and HRESULT into one readable line.
 pub fn describe_result(code: i32, hresult: i32) -> String {
-    if result_code_ok(code) && hresult == 0 {
-        result_code_text(code).to_string()
-    } else if hresult == 0 {
+    if hresult == 0 {
         result_code_text(code).to_string()
     } else {
-        format!("{}: {}", result_code_text(code), hresult_message(hresult, ""))
+        format!(
+            "{}: {}",
+            result_code_text(code),
+            hresult_message(hresult, "")
+        )
     }
 }
 
@@ -93,14 +95,17 @@ fn norm(s: &str) -> String {
 
 /// Match an update to an installed device by hardware id (the installed side may
 /// list several ids separated by commas/semicolons/newlines).
-pub fn match_installed<'a>(u: &DriverUpdate, installed: &'a [InstalledDriver]) -> Option<&'a InstalledDriver> {
+pub fn match_installed<'a>(
+    u: &DriverUpdate,
+    installed: &'a [InstalledDriver],
+) -> Option<&'a InstalledDriver> {
     let want = norm(&u.hardware_id);
     if want.is_empty() {
         return None;
     }
     installed.iter().find(|d| {
         let ids = norm(&d.hardware_id);
-        ids.split(|c| c == ',' || c == ';' || c == '\n')
+        ids.split([',', ';', '\n'])
             .any(|id| !id.trim().is_empty() && id.trim() == want)
     })
 }
@@ -147,7 +152,9 @@ fn parse_update(u: &IUpdate) -> Result<DriverUpdate> {
         let mut out = DriverUpdate {
             update_id: ident.UpdateID()?.to_string(),
             revision: ident.RevisionNumber()?,
-            new_version: DriverVersion::find_in_text(&title).map(|v| v.to_string()).unwrap_or_default(),
+            new_version: DriverVersion::find_in_text(&title)
+                .map(|v| v.to_string())
+                .unwrap_or_default(),
             title,
             eula_accepted: u.EulaAccepted().map(|b| b.as_bool()).unwrap_or(false),
             size_bytes: u.MaxDownloadSize().map(decimal_to_u64).unwrap_or(0),
@@ -155,9 +162,15 @@ fn parse_update(u: &IUpdate) -> Result<DriverUpdate> {
         };
         if let Ok(d) = u.cast::<IWindowsDriverUpdate>() {
             out.device_name = d.DriverModel().map(|b| b.to_string()).unwrap_or_default();
-            out.manufacturer = d.DriverManufacturer().map(|b| b.to_string()).unwrap_or_default();
+            out.manufacturer = d
+                .DriverManufacturer()
+                .map(|b| b.to_string())
+                .unwrap_or_default();
             out.driver_class = d.DriverClass().map(|b| b.to_string()).unwrap_or_default();
-            out.hardware_id = d.DriverHardwareID().map(|b| b.to_string()).unwrap_or_default();
+            out.hardware_id = d
+                .DriverHardwareID()
+                .map(|b| b.to_string())
+                .unwrap_or_default();
             out.new_date = d.DriverVerDate().ok().and_then(Date::from_ole);
         }
         Ok(out)
@@ -166,11 +179,14 @@ fn parse_update(u: &IUpdate) -> Result<DriverUpdate> {
 
 fn decimal_to_u64(d: windows::Win32::Foundation::DECIMAL) -> u64 {
     // SAFETY: DECIMAL is plain data; Lo64 is the low 64 bits of the 96-bit mantissa.
-    let v = unsafe { d.Anonymous2.Lo64 };
-    v
+    unsafe { d.Anonymous2.Lo64 }
 }
 
-fn search(session: &IUpdateSession, cancel: &AtomicBool, progress: &mut dyn FnMut(Progress)) -> Result<Vec<IUpdate>> {
+fn search(
+    session: &IUpdateSession,
+    cancel: &AtomicBool,
+    progress: &mut dyn FnMut(Progress),
+) -> Result<Vec<IUpdate>> {
     // SAFETY: COM calls on live interfaces; the job is polled until completion.
     unsafe {
         let searcher = session.CreateUpdateSearcher()?;
@@ -187,7 +203,10 @@ fn search(session: &IUpdateSession, cancel: &AtomicBool, progress: &mut dyn FnMu
                 return Err(CoreError::Cancelled);
             }
             progress(Progress {
-                stage: format!("Searching Windows Update... {}s elapsed (this can take several minutes)", start.elapsed().as_secs()),
+                stage: format!(
+                    "Searching Windows Update... {}s elapsed (this can take several minutes)",
+                    start.elapsed().as_secs()
+                ),
                 percent: None,
             });
             std::thread::sleep(Duration::from_millis(500));
@@ -210,7 +229,10 @@ pub fn search_driver_updates(
 ) -> Result<Vec<DriverUpdate>> {
     let _com = ComGuard::new()?;
     let sess = session()?;
-    progress(Progress { stage: "Contacting Windows Update...".into(), percent: None });
+    progress(Progress {
+        stage: "Contacting Windows Update...".into(),
+        percent: None,
+    });
     let found = search(&sess, cancel, progress)?;
     let mut out = Vec::with_capacity(found.len());
     for u in &found {
@@ -240,7 +262,8 @@ pub fn install_updates(
 
     // SAFETY: COM calls on live interfaces; jobs are polled to completion.
     unsafe {
-        let to_install: IUpdateCollection = CoCreateInstance(&UpdateCollection, None, CLSCTX_INPROC_SERVER)?;
+        let to_install: IUpdateCollection =
+            CoCreateInstance(&UpdateCollection, None, CLSCTX_INPROC_SERVER)?;
         let mut titles = Vec::new();
         for u in &found {
             let id = u.Identity()?.UpdateID()?.to_string();
@@ -279,7 +302,10 @@ pub fn install_updates(
                 progress(Progress {
                     stage: format!(
                         "Downloading {} ({}/{})",
-                        titles.get(idx as usize).map(String::as_str).unwrap_or("update"),
+                        titles
+                            .get(idx as usize)
+                            .map(String::as_str)
+                            .unwrap_or("update"),
                         idx + 1,
                         titles.len()
                     ),
@@ -290,7 +316,8 @@ pub fn install_updates(
         }
         let dres = downloader.EndDownload(&djob)?;
         let mut summary = InstallSummary::default();
-        let ready: IUpdateCollection = CoCreateInstance(&UpdateCollection, None, CLSCTX_INPROC_SERVER)?;
+        let ready: IUpdateCollection =
+            CoCreateInstance(&UpdateCollection, None, CLSCTX_INPROC_SERVER)?;
         for (i, title) in titles.iter().enumerate() {
             let r = dres.GetUpdateResult(i as i32)?;
             let code = r.ResultCode()?.0;
@@ -299,7 +326,10 @@ pub fn install_updates(
             } else {
                 summary.outcomes.push(UpdateOutcome {
                     title: title.clone(),
-                    result: format!("Download - {}", describe_result(code, r.HResult().unwrap_or(0))),
+                    result: format!(
+                        "Download - {}",
+                        describe_result(code, r.HResult().unwrap_or(0))
+                    ),
                     success: false,
                 });
             }
@@ -317,7 +347,11 @@ pub fn install_updates(
             if let Ok(p) = ijob.GetProgress() {
                 let idx = p.CurrentUpdateIndex().unwrap_or(0);
                 progress(Progress {
-                    stage: format!("Installing update {} of {}", idx + 1, ready.Count().unwrap_or(0)),
+                    stage: format!(
+                        "Installing update {} of {}",
+                        idx + 1,
+                        ready.Count().unwrap_or(0)
+                    ),
                     percent: p.PercentComplete().ok().map(|x| x.max(0) as u32),
                 });
             }
@@ -335,18 +369,34 @@ pub fn install_updates(
                 success: result_code_ok(code),
             });
         }
-        info!("install finished: {} outcomes, reboot={}", summary.outcomes.len(), summary.reboot_required);
+        info!(
+            "install finished: {} outcomes, reboot={}",
+            summary.outcomes.len(),
+            summary.reboot_required
+        );
         Ok(summary)
     }
 }
 
 /// Ask Windows to restart in 10 seconds (the UI must confirm first).
 pub fn reboot_now() -> Result<()> {
-    let (code, out) = crate::util::run_hidden("shutdown", &["/r", "/t", "10", "/c", "Rustacer: restarting to finish driver installation"])?;
+    let (code, out) = crate::util::run_hidden(
+        "shutdown",
+        &[
+            "/r",
+            "/t",
+            "10",
+            "/c",
+            "Rustacer: restarting to finish driver installation",
+        ],
+    )?;
     if code == 0 {
         Ok(())
     } else {
-        Err(CoreError::Message(format!("Could not schedule restart: {}", out.trim())))
+        Err(CoreError::Message(format!(
+            "Could not schedule restart: {}",
+            out.trim()
+        )))
     }
 }
 
@@ -383,7 +433,10 @@ mod tests {
 
     #[test]
     fn matches_by_hardware_id() {
-        let list = [inst("PCI\\VEN_8086&DEV_1234", "1.0.0.0"), inst("USB\\VID_1", "2.0")];
+        let list = [
+            inst("PCI\\VEN_8086&DEV_1234", "1.0.0.0"),
+            inst("USB\\VID_1", "2.0"),
+        ];
         let mut u = [DriverUpdate {
             hardware_id: "pci\\ven_8086&dev_1234".into(),
             new_version: "1.0.1.0".into(),

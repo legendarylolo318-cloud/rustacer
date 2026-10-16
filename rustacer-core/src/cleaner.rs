@@ -246,7 +246,10 @@ pub fn system_targets() -> Vec<Target> {
         },
         Target {
             category: Category::ThumbnailCache,
-            roots: existing(vec![local.join("Microsoft").join("Windows").join("Explorer")]),
+            roots: existing(vec![local
+                .join("Microsoft")
+                .join("Windows")
+                .join("Explorer")]),
             file_prefixes: Some(vec!["thumbcache_".into(), "iconcache_".into()]),
             needs_admin: false,
         },
@@ -254,8 +257,16 @@ pub fn system_targets() -> Vec<Target> {
             category: Category::ErrorReports,
             roots: existing(vec![
                 local.join("Microsoft").join("Windows").join("WER"),
-                progdata.join("Microsoft").join("Windows").join("WER").join("ReportArchive"),
-                progdata.join("Microsoft").join("Windows").join("WER").join("ReportQueue"),
+                progdata
+                    .join("Microsoft")
+                    .join("Windows")
+                    .join("WER")
+                    .join("ReportArchive"),
+                progdata
+                    .join("Microsoft")
+                    .join("Windows")
+                    .join("WER")
+                    .join("ReportQueue"),
             ]),
             file_prefixes: None,
             needs_admin: false,
@@ -356,11 +367,12 @@ pub fn clean_target(t: &Target, cancel: &AtomicBool) -> Result<CleanReport> {
 
     // Windows Update cache: stop wuauserv (and restart only if it was running).
     let mut restart_wu = false;
-    if t.category == Category::WindowsUpdateCache {
-        if crate::services::query_state("wuauserv").unwrap_or_default() == crate::services::ServiceState::Running {
-            crate::services::stop_and_wait("wuauserv", 30)?;
-            restart_wu = true;
-        }
+    if t.category == Category::WindowsUpdateCache
+        && crate::services::query_state("wuauserv").unwrap_or_default()
+            == crate::services::ServiceState::Running
+    {
+        crate::services::stop_and_wait("wuauserv", 30)?;
+        restart_wu = true;
     }
     let report = clean_roots(&t.roots, &t.file_prefixes, cancel);
     if restart_wu {
@@ -539,7 +551,7 @@ mod tests {
         fs::write(root.join("sub").join("b"), "45").unwrap();
         let keep = d.path().join("keep.txt");
         fs::write(&keep, "keep").unwrap();
-        let rep = clean_roots(&[root.clone()], &None, &no_cancel());
+        let rep = clean_roots(std::slice::from_ref(&root), &None, &no_cancel());
         assert_eq!(rep.files_deleted, 2);
         assert_eq!(rep.freed_bytes, 5);
         assert!(root.exists(), "root dir itself is preserved");
@@ -554,7 +566,11 @@ mod tests {
         fs::create_dir(&root).unwrap();
         fs::write(root.join("thumbcache_32.db"), "x").unwrap();
         fs::write(root.join("important.dat"), "x").unwrap();
-        let rep = clean_roots(&[root.clone()], &Some(vec!["thumbcache_".into()]), &no_cancel());
+        let rep = clean_roots(
+            std::slice::from_ref(&root),
+            &Some(vec!["thumbcache_".into()]),
+            &no_cancel(),
+        );
         assert_eq!(rep.files_deleted, 1);
         assert!(root.join("important.dat").exists());
     }
@@ -577,7 +593,7 @@ mod tests {
         if !status.status.success() {
             return; // environment can't make junctions; nothing to assert
         }
-        let rep = clean_roots(&[root.clone()], &None, &no_cancel());
+        let rep = clean_roots(std::slice::from_ref(&root), &None, &no_cancel());
         assert!(outside.join("precious.txt").exists());
         assert!(rep.skipped.iter().any(|s| s.reason.contains("symlink")));
     }
@@ -589,7 +605,7 @@ mod tests {
         fs::create_dir(&root).unwrap();
         fs::write(root.join("a"), "1").unwrap();
         let c = AtomicBool::new(true);
-        let rep = clean_roots(&[root.clone()], &None, &c);
+        let rep = clean_roots(std::slice::from_ref(&root), &None, &c);
         assert_eq!(rep.files_deleted, 0);
         assert!(root.join("a").exists());
     }

@@ -1,4 +1,4 @@
-﻿//! Export third-party drivers with `pnputil /export-driver * <folder>` (admin).
+//! Export third-party drivers with `pnputil /export-driver * <folder>` (admin).
 
 use crate::admin::require_admin;
 use crate::error::{CoreError, Result};
@@ -18,10 +18,14 @@ pub struct BackupResult {
 /// Reject drive roots and non-directories.
 pub fn validate_destination(dest: &Path) -> Result<()> {
     if dest.parent().is_none() {
-        return Err(CoreError::Blocked("Choose a folder, not a drive root.".into()));
+        return Err(CoreError::Blocked(
+            "Choose a folder, not a drive root.".into(),
+        ));
     }
     if dest.exists() && !dest.is_dir() {
-        return Err(CoreError::Message("The destination is not a folder.".into()));
+        return Err(CoreError::Message(
+            "The destination is not a folder.".into(),
+        ));
     }
     Ok(())
 }
@@ -86,4 +90,3 @@ mod tests {
         assert!(!is_export_line("Exporting driver package: oem1.inf"));
     }
 }
-
