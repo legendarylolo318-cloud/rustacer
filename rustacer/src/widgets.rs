@@ -1,4 +1,4 @@
-use eframe::egui::{self, Color32, Pos2, Sense, Shape, Stroke, Ui, Vec2};
+use eframe::egui::{self, Color32, CornerRadius, Pos2, RichText, Sense, Shape, Stroke, Ui, Vec2};
 
 pub fn severity_color(pct: f32) -> Color32 {
     if pct >= 90.0 {
@@ -77,11 +77,38 @@ pub fn admin_banner(ui: &mut Ui, elevated: bool, needed: bool) -> bool {
                 Color32::from_rgb(0xf5, 0xa6, 0x23),
                 "Some actions on this page need administrator rights.",
             );
-            if ui.button("Restart as admin").clicked() {
+            if ui.add(primary_btn(ui, "Restart as admin")).clicked() {
                 clicked = true;
             }
         });
         ui.add_space(4.0);
     }
     clicked
+}
+
+fn readable_on(bg: Color32) -> Color32 {
+    let lum = 0.299 * f32::from(bg.r()) + 0.587 * f32::from(bg.g()) + 0.114 * f32::from(bg.b());
+    if lum > 140.0 {
+        Color32::from_rgb(0x10, 0x14, 0x1c)
+    } else {
+        Color32::WHITE
+    }
+}
+
+fn filled_btn(text: String, fill: Color32) -> egui::Button<'static> {
+    egui::Button::new(RichText::new(text).strong().color(readable_on(fill)))
+        .fill(fill)
+        .stroke(Stroke::new(1.0, fill.gamma_multiply(1.35)))
+        .corner_radius(CornerRadius::same(8))
+        .min_size(Vec2::new(96.0, 34.0))
+}
+
+/// Accent-coloured call-to-action button.
+pub fn primary_btn(ui: &Ui, text: impl Into<String>) -> egui::Button<'static> {
+    filled_btn(text.into(), ui.visuals().selection.stroke.color)
+}
+
+/// Red button for destructive actions.
+pub fn danger_btn(_ui: &Ui, text: impl Into<String>) -> egui::Button<'static> {
+    filled_btn(text.into(), Color32::from_rgb(0xc9, 0x3c, 0x42))
 }

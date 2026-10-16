@@ -1,5 +1,5 @@
 use crate::app::*;
-use crate::widgets::{admin_banner, gauge, heading};
+use crate::widgets::{admin_banner, danger_btn, gauge, heading, primary_btn};
 use eframe::egui::{self, Color32, Context, RichText, Sense, Ui};
 use egui_extras::{Column, TableBuilder};
 use egui_plot::{Line, Plot, PlotPoints};
@@ -46,7 +46,10 @@ pub fn sidebar(app: &mut App, ui: &mut Ui, ctx: &Context) {
                     );
                 } else {
                     ui.label(RichText::new("Standard user mode").weak());
-                    if ui.button(tr(Lang::English, "admin.restart")).clicked() {
+                    if ui
+                        .add(primary_btn(ui, tr(Lang::English, "admin.restart")))
+                        .clicked()
+                    {
                         app.restart_as_admin(ctx);
                     }
                 }
@@ -221,7 +224,7 @@ fn startup(app: &mut App, ui: &mut Ui) {
             ui.label("Arguments");
             ui.text_edit_singleline(&mut app.startup.new_args);
         });
-        if ui.button("Add (current user)").clicked() {
+        if ui.add(primary_btn(ui, "Add (current user)")).clicked() {
             act = Some(Act::StartupAdd {
                 name: app.startup.new_name.clone(),
                 exe: app.startup.new_exe.clone(),
@@ -337,7 +340,7 @@ fn cleaner(app: &mut App, ui: &mut Ui) {
     ui.add_space(6.0);
     ui.horizontal(|ui| {
         let busy = app.cleaner.scanning || app.cleaner.cleaning;
-        if ui.add_enabled(!busy, egui::Button::new("Scan")).clicked() {
+        if ui.add_enabled(!busy, primary_btn(ui, "Scan")).clicked() {
             app.scan_cleaner();
         }
         if busy {
@@ -377,7 +380,7 @@ fn cleaner(app: &mut App, ui: &mut Ui) {
         if ui
             .add_enabled(
                 total > 0 && !app.cleaner.cleaning,
-                egui::Button::new(format!("Clean selected ({})", format_bytes(total))),
+                primary_btn(ui, format!("Clean selected ({})", format_bytes(total))),
             )
             .clicked()
         {
@@ -564,7 +567,7 @@ fn drivers_updates(app: &mut App, ui: &mut Ui) {
     ui.horizontal(|ui| {
         let busy = app.drivers.scanning || app.drivers.installing;
         if ui
-            .add_enabled(!busy, egui::Button::new("Scan for driver updates"))
+            .add_enabled(!busy, primary_btn(ui, "Scan for driver updates"))
             .clicked()
         {
             app.scan_driver_updates();
@@ -617,7 +620,7 @@ fn drivers_updates(app: &mut App, ui: &mut Ui) {
                 Color32::from_rgb(0xf5, 0xa6, 0x23),
                 "A reboot is required to finish installation.",
             );
-            if ui.button("Reboot now").clicked() {
+            if ui.add(primary_btn(ui, "Reboot now")).clicked() {
                 app.confirm = Some(Confirm {
                     title: "Restart Windows".into(),
                     body: "Restart the computer in 10 seconds? Save your work first.".into(),
@@ -645,7 +648,7 @@ fn drivers_updates(app: &mut App, ui: &mut Ui) {
         if ui
             .add_enabled(
                 n_sel > 0 && !app.drivers.installing,
-                egui::Button::new(format!("Install selected ({n_sel})")),
+                primary_btn(ui, format!("Install selected ({n_sel})")),
             )
             .clicked()
         {
@@ -748,7 +751,7 @@ fn drivers_backup(app: &mut App, ui: &mut Ui) {
     if ui
         .add_enabled(
             !app.drivers.backing_up && !app.drivers.backup_dir.trim().is_empty(),
-            egui::Button::new("Back up drivers"),
+            primary_btn(ui, "Back up drivers"),
         )
         .clicked()
     {
@@ -993,12 +996,12 @@ fn processes(app: &mut App, ui: &mut Ui) {
     let mut kill: Option<(bool, u32, String)> = None;
     ui.horizontal(|ui| {
         ui.add_enabled_ui(sel.is_some(), |ui| {
-            if ui.button("End process").clicked() {
+            if ui.add(danger_btn(ui, "End process")).clicked() {
                 if let Some(p) = &sel {
                     kill = Some((false, p.pid, p.name.clone()));
                 }
             }
-            if ui.button("End process tree").clicked() {
+            if ui.add(danger_btn(ui, "End process tree")).clicked() {
                 if let Some(p) = &sel {
                     kill = Some((true, p.pid, p.name.clone()));
                 }
@@ -1175,7 +1178,7 @@ fn uninstaller(app: &mut App, ui: &mut Ui) {
     let mut act: Option<(AppEntryOwned, bool)> = None;
     ui.horizontal(|ui| {
         ui.add_enabled_ui(sel.is_some(), |ui| {
-            if ui.button("Uninstall").clicked() {
+            if ui.add(primary_btn(ui, "Uninstall")).clicked() {
                 if let Some(a) = &sel {
                     act = Some((a.clone(), false));
                 }
@@ -1273,7 +1276,7 @@ fn winget_table(app: &mut App, ui: &mut Ui) {
         .and_then(|i| app.uninst.winget.get(i))
         .cloned();
     if ui
-        .add_enabled(sel.is_some(), egui::Button::new("Uninstall with winget"))
+        .add_enabled(sel.is_some(), primary_btn(ui, "Uninstall with winget"))
         .clicked()
     {
         if let Some(w) = sel {

@@ -66,7 +66,27 @@ fn palette(t: Theme) -> Option<Palette> {
     })
 }
 
+/// Rounded controls with a subtle outline, shared by every theme.
+fn polish(mut v: Visuals) -> Visuals {
+    let r = CornerRadius::same(8);
+    for w in [
+        &mut v.widgets.inactive,
+        &mut v.widgets.hovered,
+        &mut v.widgets.active,
+        &mut v.widgets.open,
+    ] {
+        w.corner_radius = r;
+    }
+    v.widgets.inactive.bg_stroke = Stroke::new(1.0, v.widgets.inactive.bg_fill.gamma_multiply(1.5));
+    v.window_corner_radius = CornerRadius::same(12);
+    v
+}
+
 pub fn visuals(t: Theme) -> Visuals {
+    polish(raw_visuals(t))
+}
+
+fn raw_visuals(t: Theme) -> Visuals {
     let Some(p) = palette(t) else {
         return if t == Theme::Light {
             Visuals::light()

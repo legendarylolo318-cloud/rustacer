@@ -762,7 +762,7 @@ impl App {
                 }
                 ui.add_space(10.0);
                 ui.horizontal(|ui| {
-                    if ui.button("Confirm").clicked() {
+                    if ui.add(crate::widgets::primary_btn(ui, "Confirm")).clicked() {
                         decision = Some(true);
                     }
                     if ui.button("Cancel").clicked() {
