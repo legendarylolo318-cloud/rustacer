@@ -5,7 +5,10 @@ use std::os::windows::process::CommandExt;
 use std::path::Path;
 use std::process::Command;
 use windows::core::PCWSTR;
-use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_MULTITHREADED};
+use windows::Win32::System::Com::{
+    CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE,
+    COINIT_MULTITHREADED,
+};
 use windows::Win32::UI::Shell::ShellExecuteW;
 use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
 
@@ -16,9 +19,9 @@ pub fn wide(s: impl AsRef<OsStr>) -> Vec<u16> {
     s.as_ref().encode_wide().chain(std::iter::once(0)).collect()
 }
 
-/// Human-readable byte count (binary units).
+/// Human-readable byte count in binary (IEC) units: 1 KiB = 1024 bytes.
 pub fn format_bytes(b: u64) -> String {
-    const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
+    const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
     let mut v = b as f64;
     let mut i = 0;
     while v >= 1024.0 && i < UNITS.len() - 1 {
@@ -38,9 +41,19 @@ pub struct ComGuard {
 }
 
 impl ComGuard {
+    /// Multithreaded apartment: WUA, WMI and Task Scheduler on worker threads.
     pub fn new() -> Result<Self> {
+        Self::init(COINIT_MULTITHREADED)
+    }
+
+    /// Single-threaded apartment, as the Shell (ShellExecute) recommends.
+    pub fn sta() -> Result<Self> {
+        Self::init(COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE)
+    }
+
+    fn init(model: windows::Win32::System::Com::COINIT) -> Result<Self> {
         // SAFETY: balanced with CoUninitialize in Drop; only counted if S_OK/S_FALSE.
-        let hr = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
+        let hr = unsafe { CoInitializeEx(None, model) };
         if hr.is_ok() {
             Ok(Self { initialised: true })
         } else {
@@ -79,6 +92,8 @@ pub fn run_hidden(program: &str, args: &[&str]) -> Result<(i32, String)> {
 
 /// ShellExecute with an explicit verb ("open", "runas", ...).
 pub fn shell_execute(verb: &str, file: &str, params: Option<&str>) -> Result<()> {
+    // If this thread is already in the MTA, the guard is a no-op and ShellExecute still works.
+    let _com = ComGuard::sta();
     let verb_w = wide(verb);
     let file_w = wide(file);
     let params_w = params.map(wide);
@@ -174,8 +189,8 @@ mod tests {
     #[test]
     fn bytes_format() {
         assert_eq!(format_bytes(512), "512 B");
-        assert_eq!(format_bytes(1536), "1.5 KB");
-        assert_eq!(format_bytes(5 * 1024 * 1024 * 1024), "5.0 GB");
+        assert_eq!(format_bytes(1536), "1.5 KiB");
+        assert_eq!(format_bytes(5 * 1024 * 1024 * 1024), "5.0 GiB");
     }
 
     #[test]
