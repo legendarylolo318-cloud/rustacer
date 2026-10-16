@@ -81,8 +81,23 @@ fn is_reparse(meta: &std::fs::Metadata) -> bool {
     meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
 }
 
-/// Roots that are too shallow (drive root, C:\Windows, etc.) are refused outright.
+/// Roots must be absolute, must not themselves be symlinks/junctions, and must not be
+/// too shallow (drive root, C:\Windows, etc.).
 pub fn validate_root(root: &Path) -> Result<PathBuf> {
+    if !root.is_absolute() {
+        return Err(CoreError::Blocked(format!(
+            "'{}' is not an absolute path",
+            root.display()
+        )));
+    }
+    let meta = std::fs::symlink_metadata(root)
+        .map_err(|e| CoreError::Blocked(format!("{}: {e}", root.display())))?;
+    if is_reparse(&meta) || !meta.is_dir() {
+        return Err(CoreError::Blocked(format!(
+            "'{}' is a link or not a folder; refusing to clean it",
+            root.display()
+        )));
+    }
     let canon = root
         .canonicalize()
         .map_err(|e| CoreError::Blocked(format!("{}: {e}", root.display())))?;
@@ -190,6 +205,33 @@ fn existing(paths: Vec<PathBuf>) -> Vec<PathBuf> {
     paths.into_iter().filter(|p| p.is_dir()).collect()
 }
 
+/// Keep only absolute paths whose final component is one of `leaves` (case-insensitive).
+/// This stops a hostile or odd environment variable (e.g. %TEMP%=C:\Users\me) from
+/// turning an unrelated folder into a cleaning root.
+pub fn sane_roots(paths: Vec<PathBuf>, leaves: &[&str]) -> Vec<PathBuf> {
+    paths
+        .into_iter()
+        .filter(|p| p.is_absolute() && leaf_ok(p, leaves))
+        .collect()
+}
+
+fn leaf_ok(p: &Path, leaves: &[&str]) -> bool {
+    let name = |q: &Path| {
+        q.file_name()
+            .map(|n| n.to_string_lossy().to_ascii_lowercase())
+            .unwrap_or_default()
+    };
+    let leaf = name(p);
+    if leaves.contains(&leaf.as_str()) {
+        return true;
+    }
+    // Per-session temp folders such as ...\Temp\2 (Remote Desktop).
+    leaves.contains(&"temp")
+        && !leaf.is_empty()
+        && leaf.chars().all(|c| c.is_ascii_digit())
+        && p.parent().is_some_and(|parent| name(parent) == "temp")
+}
+
 /// Subdirectories of a Chromium "User Data" dir that hold only cache data.
 fn chromium_cache_dirs(user_data: &Path) -> Vec<PathBuf> {
     let mut out = Vec::new();
@@ -220,21 +262,24 @@ fn firefox_cache_dirs(local: &Path) -> Vec<PathBuf> {
 
 /// The real, whitelisted system targets.
 pub fn system_targets() -> Vec<Target> {
+    // Unset variables yield empty paths, which `sane_roots` rejects (not absolute).
     let local = env_path("LOCALAPPDATA").unwrap_or_default();
     let windir = env_path("SystemRoot").unwrap_or_else(|| PathBuf::from(r"C:\Windows"));
     let progdata = env_path("ProgramData").unwrap_or_default();
     let temp = env_path("TEMP").unwrap_or_else(|| local.join("Temp"));
+    let temp_leaves: &[&str] = &["temp", "tmp"];
+    let cache_leaves: &[&str] = &["cache", "code cache", "gpucache", "cache2"];
 
     vec![
         Target {
             category: Category::UserTemp,
-            roots: existing(vec![temp]),
+            roots: sane_roots(existing(vec![temp]), temp_leaves),
             file_prefixes: None,
             needs_admin: false,
         },
         Target {
             category: Category::WindowsTemp,
-            roots: existing(vec![windir.join("Temp")]),
+            roots: sane_roots(existing(vec![windir.join("Temp")]), &["temp"]),
             file_prefixes: None,
             needs_admin: true,
         },
@@ -246,52 +291,67 @@ pub fn system_targets() -> Vec<Target> {
         },
         Target {
             category: Category::ThumbnailCache,
-            roots: existing(vec![local
-                .join("Microsoft")
-                .join("Windows")
-                .join("Explorer")]),
+            roots: sane_roots(
+                existing(vec![local
+                    .join("Microsoft")
+                    .join("Windows")
+                    .join("Explorer")]),
+                &["explorer"],
+            ),
             file_prefixes: Some(vec!["thumbcache_".into(), "iconcache_".into()]),
             needs_admin: false,
         },
         Target {
             category: Category::ErrorReports,
-            roots: existing(vec![
-                local.join("Microsoft").join("Windows").join("WER"),
-                progdata
-                    .join("Microsoft")
-                    .join("Windows")
-                    .join("WER")
-                    .join("ReportArchive"),
-                progdata
-                    .join("Microsoft")
-                    .join("Windows")
-                    .join("WER")
-                    .join("ReportQueue"),
-            ]),
+            roots: sane_roots(
+                existing(vec![
+                    local.join("Microsoft").join("Windows").join("WER"),
+                    progdata
+                        .join("Microsoft")
+                        .join("Windows")
+                        .join("WER")
+                        .join("ReportArchive"),
+                    progdata
+                        .join("Microsoft")
+                        .join("Windows")
+                        .join("WER")
+                        .join("ReportQueue"),
+                ]),
+                &["wer", "reportarchive", "reportqueue"],
+            ),
             file_prefixes: None,
             needs_admin: false,
         },
         Target {
             category: Category::WindowsUpdateCache,
-            roots: existing(vec![windir.join("SoftwareDistribution").join("Download")]),
+            roots: sane_roots(
+                existing(vec![windir.join("SoftwareDistribution").join("Download")]),
+                &["download"],
+            ),
             file_prefixes: None,
             needs_admin: true,
         },
         Target {
             category: Category::ChromeCache,
-            roots: chromium_cache_dirs(&local.join("Google").join("Chrome").join("User Data")),
+            roots: sane_roots(
+                chromium_cache_dirs(&local.join("Google").join("Chrome").join("User Data")),
+                cache_leaves,
+            ),
             file_prefixes: None,
             needs_admin: false,
         },
         Target {
             category: Category::EdgeCache,
-            roots: chromium_cache_dirs(&local.join("Microsoft").join("Edge").join("User Data")),
+            roots: sane_roots(
+                chromium_cache_dirs(&local.join("Microsoft").join("Edge").join("User Data")),
+                cache_leaves,
+            ),
             file_prefixes: None,
             needs_admin: false,
         },
         Target {
             category: Category::FirefoxCache,
-            roots: firefox_cache_dirs(&local),
+            roots: sane_roots(firefox_cache_dirs(&local), cache_leaves),
             file_prefixes: None,
             needs_admin: false,
         },
@@ -596,6 +656,144 @@ mod tests {
         let rep = clean_roots(std::slice::from_ref(&root), &None, &no_cancel());
         assert!(outside.join("precious.txt").exists());
         assert!(rep.skipped.iter().any(|s| s.reason.contains("symlink")));
+    }
+
+    #[test]
+    fn relative_and_empty_roots_refused() {
+        assert!(validate_root(Path::new("")).is_err());
+        assert!(validate_root(Path::new("Temp")).is_err());
+        assert!(validate_root(Path::new(r"C:\Windows")).is_err());
+        let d = tempfile::tempdir().unwrap();
+        let r = clean_roots(&[PathBuf::from("src")], &None, &no_cancel());
+        assert_eq!(r.files_deleted, 0);
+        assert!(!r.skipped.is_empty());
+        drop(d);
+    }
+
+    #[test]
+    fn file_as_root_refused() {
+        let d = tempfile::tempdir().unwrap();
+        let f = d.path().join("cache");
+        fs::write(&f, "x").unwrap();
+        assert!(validate_root(&f).is_err());
+        assert!(f.exists());
+    }
+
+    #[test]
+    fn env_style_roots_need_expected_leaf() {
+        let d = tempfile::tempdir().unwrap();
+        let home = d.path().join("Users").join("me");
+        let temp = home.join("AppData").join("Local").join("Temp");
+        let rdp = temp.join("2");
+        fs::create_dir_all(&rdp).unwrap();
+        let ok = sane_roots(
+            vec![temp.clone(), rdp.clone(), home.clone()],
+            &["temp", "tmp"],
+        );
+        assert_eq!(
+            ok,
+            vec![temp, rdp],
+            "a %TEMP% pointing at a profile dir is dropped"
+        );
+        assert!(sane_roots(vec![PathBuf::from("Temp")], &["temp"]).is_empty());
+        assert!(sane_roots(vec![PathBuf::new()], &["temp"]).is_empty());
+        let numeric_elsewhere = d.path().join("Projects").join("2");
+        fs::create_dir_all(&numeric_elsewhere).unwrap();
+        assert!(sane_roots(vec![numeric_elsewhere], &["temp"]).is_empty());
+    }
+
+    #[test]
+    fn junction_root_is_refused() {
+        let d = tempfile::tempdir().unwrap();
+        let outside = d.path().join("Documents");
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(outside.join("thesis.docx"), "data").unwrap();
+        let link = d.path().join("Cache");
+        let ok = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(&link)
+            .arg(&outside)
+            .output()
+            .unwrap();
+        if !ok.status.success() {
+            return;
+        }
+        let rep = clean_roots(std::slice::from_ref(&link), &None, &no_cancel());
+        assert_eq!(rep.files_deleted, 0);
+        assert!(outside.join("thesis.docx").exists());
+    }
+
+    #[test]
+    fn file_symlink_is_skipped() {
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path().join("t");
+        fs::create_dir(&root).unwrap();
+        let target = d.path().join("outside.txt");
+        fs::write(&target, "keep").unwrap();
+        // Needs Developer Mode or admin; skip silently if unavailable.
+        if std::os::windows::fs::symlink_file(&target, root.join("link.txt")).is_err() {
+            return;
+        }
+        let rep = clean_roots(std::slice::from_ref(&root), &None, &no_cancel());
+        assert!(target.exists());
+        assert_eq!(rep.files_deleted, 0);
+    }
+
+    #[test]
+    fn dotdot_entries_cannot_escape() {
+        let d = tempfile::tempdir().unwrap();
+        let root = d.path().join("t");
+        fs::create_dir_all(root.join("a")).unwrap();
+        let keep = d.path().join("keep.txt");
+        fs::write(&keep, "x").unwrap();
+        // A root expressed with .. still canonicalises to itself; siblings stay safe.
+        let weird = root.join("a").join("..");
+        let rep = clean_roots(&[weird], &None, &no_cancel());
+        assert_eq!(rep.files_deleted, 0);
+        assert!(keep.exists());
+        assert!(!is_inside(&root.canonicalize().unwrap(), &keep));
+    }
+
+    #[test]
+    fn system_targets_are_all_absolute_and_leaf_checked() {
+        for t in system_targets() {
+            for r in &t.roots {
+                assert!(r.is_absolute(), "{r:?}");
+                let leaf = r
+                    .file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .to_ascii_lowercase();
+                assert!(
+                    [
+                        "temp",
+                        "tmp",
+                        "explorer",
+                        "wer",
+                        "reportarchive",
+                        "reportqueue",
+                        "download",
+                        "cache",
+                        "code cache",
+                        "gpucache",
+                        "cache2"
+                    ]
+                    .contains(&leaf.as_str())
+                        || leaf.chars().all(|c| c.is_ascii_digit()),
+                    "{r:?}"
+                );
+                let l = r.to_string_lossy().to_ascii_lowercase();
+                for banned in [
+                    "cookies",
+                    "history",
+                    "login data",
+                    "places.sqlite",
+                    "network",
+                ] {
+                    assert!(!l.ends_with(banned), "{r:?}");
+                }
+            }
+        }
     }
 
     #[test]
