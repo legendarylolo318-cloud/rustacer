@@ -5,10 +5,58 @@ use crate::error::{CoreError, Result};
 use crate::util::ComGuard;
 use serde::Deserialize;
 use tracing::info;
-use windows::Win32::System::Restore::{
-    SRRemoveRestorePoint, SRSetRestorePointW, RESTOREPOINTINFOW, RESTOREPOINTINFO_EVENT_TYPE,
-    RESTOREPOINTINFO_TYPE, STATEMGRSTATUS,
+use windows::core::{s, w, BOOL};
+use windows::Win32::Foundation::{FreeLibrary, HMODULE};
+use windows::Win32::System::LibraryLoader::{
+    GetProcAddress, LoadLibraryExW, LOAD_LIBRARY_SEARCH_SYSTEM32,
 };
+use windows::Win32::System::Restore::{
+    RESTOREPOINTINFOW, RESTOREPOINTINFO_EVENT_TYPE, RESTOREPOINTINFO_TYPE, STATEMGRSTATUS,
+};
+
+// srclient.dll (System Restore) is missing on Windows Server and some stripped-down
+// installs. Linking it statically would stop Rustacer from starting at all there, so it
+// is loaded on demand and its absence becomes an ordinary error.
+type SetFn = unsafe extern "system" fn(*const RESTOREPOINTINFOW, *mut STATEMGRSTATUS) -> BOOL;
+type RemoveFn = unsafe extern "system" fn(u32) -> u32;
+
+struct SrClient(HMODULE);
+
+impl SrClient {
+    fn load() -> Option<Self> {
+        // SAFETY: loads a system DLL from System32 only; the handle is freed in Drop.
+        unsafe { LoadLibraryExW(w!("srclient.dll"), None, LOAD_LIBRARY_SEARCH_SYSTEM32) }
+            .ok()
+            .map(SrClient)
+    }
+
+    fn set_restore_point(&self) -> Option<SetFn> {
+        // SAFETY: the export has exactly this documented signature.
+        unsafe {
+            GetProcAddress(self.0, s!("SRSetRestorePointW"))
+                .map(|f| std::mem::transmute::<_, SetFn>(f))
+        }
+    }
+
+    fn remove_restore_point(&self) -> Option<RemoveFn> {
+        // SAFETY: the export has exactly this documented signature.
+        unsafe {
+            GetProcAddress(self.0, s!("SRRemoveRestorePoint"))
+                .map(|f| std::mem::transmute::<_, RemoveFn>(f))
+        }
+    }
+}
+
+impl Drop for SrClient {
+    fn drop(&mut self) {
+        // SAFETY: handle came from LoadLibraryExW and is freed once.
+        unsafe {
+            let _ = FreeLibrary(self.0);
+        }
+    }
+}
+
+const NOT_AVAILABLE: &str = "System Restore is not available on this edition of Windows";
 
 const BEGIN_SYSTEM_CHANGE: u32 = 100;
 const END_SYSTEM_CHANGE: u32 = 101;
@@ -52,9 +100,15 @@ pub fn create_restore_point(description: &str) -> RestoreOutcome {
         llSequenceNumber: 0,
         szDescription: describe(description),
     };
+    let Some(lib) = SrClient::load() else {
+        return RestoreOutcome::Failed(NOT_AVAILABLE.into());
+    };
+    let Some(set) = lib.set_restore_point() else {
+        return RestoreOutcome::Failed(NOT_AVAILABLE.into());
+    };
     let mut status = STATEMGRSTATUS::default();
-    // SAFETY: both structs are valid for the duration of the call.
-    let ok = unsafe { SRSetRestorePointW(&info, &mut status) };
+    // SAFETY: both structs are valid for the duration of the call; `lib` keeps the DLL loaded.
+    let ok = unsafe { set(&info, &mut status) };
     let (code, seq) = ({ status.nStatus }.0, { status.llSequenceNumber });
     if ok.as_bool() && code == 0 {
         RestoreOutcome::Created { sequence: seq }
@@ -71,9 +125,13 @@ pub fn finish_restore_point(sequence: i64) {
         llSequenceNumber: sequence,
         szDescription: [0; 256],
     };
+    let Some(lib) = SrClient::load() else { return };
+    let Some(set) = lib.set_restore_point() else {
+        return;
+    };
     let mut status = STATEMGRSTATUS::default();
-    // SAFETY: both structs are valid for the duration of the call.
-    let _ = unsafe { SRSetRestorePointW(&info, &mut status) };
+    // SAFETY: both structs are valid for the duration of the call; `lib` keeps the DLL loaded.
+    let _ = unsafe { set(&info, &mut status) };
 }
 
 // ---------- listing / deleting existing restore points ----------
@@ -157,8 +215,12 @@ pub fn list_restore_points() -> Result<Vec<RestorePoint>> {
 /// Permanently delete one restore point. Needs administrator rights; cannot be undone.
 pub fn delete_restore_point(sequence: u32) -> Result<()> {
     require_admin()?;
-    // SAFETY: plain call taking a sequence number; no pointers involved.
-    let code = unsafe { SRRemoveRestorePoint(sequence) };
+    let lib = SrClient::load().ok_or_else(|| CoreError::Message(NOT_AVAILABLE.into()))?;
+    let remove = lib
+        .remove_restore_point()
+        .ok_or_else(|| CoreError::Message(NOT_AVAILABLE.into()))?;
+    // SAFETY: takes only a sequence number; `lib` keeps the DLL loaded for the call.
+    let code = unsafe { remove(sequence) };
     if code == 0 {
         info!("deleted restore point #{sequence}");
         Ok(())
