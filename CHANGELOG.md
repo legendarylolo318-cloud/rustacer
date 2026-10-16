@@ -3,6 +3,21 @@
 All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+- Restore points tab in the Driver Updater: lists System Restore points (admin), with a confirmed delete for each.
+- `--screenshots <dir>` mode and README screenshots.
+
+### Changed
+- GPU (display) drivers are never offered or installed through Windows Update; the GPU tab links to vendor pages instead.
+- CI uses Node 24 versions of the GitHub actions, and the release job runs on `ubuntu-24.04`.
+
+### Fixed
+- The cleaner could stop `wuauserv` and clear the Windows Update cache while a driver install was running. Both the cleaner and service control now refuse while a search or install is in progress.
+- Drivers with placeholder dates (Intel's 1968-07-18) were flagged as old.
+- The CPU-per-core legend overflowed the Resources page on many-core CPUs.
+
 ## [0.1.0] - 2026-10-16
 
 ### Added
