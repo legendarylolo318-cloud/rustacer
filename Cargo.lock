@@ -2965,7 +2965,7 @@ dependencies = [
 
 [[package]]
 name = "rustacer"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "eframe",
  "egui_extras",
@@ -2982,7 +2982,7 @@ dependencies = [
 
 [[package]]
 name = "rustacer-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "dirs",
  "serde",
