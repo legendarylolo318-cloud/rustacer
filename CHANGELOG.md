@@ -16,6 +16,7 @@ All notable changes to this project are documented here. The format follows
 ### Fixed
 - The cleaner could stop `wuauserv` and clear the Windows Update cache while a driver install was running. Both the cleaner and service control now refuse while a search or install is in progress.
 - Drivers with placeholder dates (Intel's 1968-07-18) were flagged as old.
+- System Restore functions were linked statically, so `rustacer.exe` (and the test binary) failed to start on Windows editions without `srclient.dll`, such as Windows Server.
 - The CPU-per-core legend overflowed the Resources page on many-core CPUs.
 
 ## [0.1.0] - 2026-10-16
