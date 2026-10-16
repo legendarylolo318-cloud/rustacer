@@ -1,0 +1,16 @@
+//! Rustacer core: all system logic, no GUI.
+
+pub mod admin;
+pub mod cleaner;
+pub mod config;
+pub mod drivers;
+pub mod error;
+pub mod metrics;
+pub mod processes;
+pub mod services;
+pub mod startup;
+pub mod strings;
+pub mod uninstaller;
+pub mod util;
+
+pub use error::{CoreError, Result};
