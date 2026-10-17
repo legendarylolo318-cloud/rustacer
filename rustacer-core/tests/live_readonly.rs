@@ -230,3 +230,53 @@ fn network_connections() {
     assert!(v.iter().any(|c| c.v6));
     assert!(v.iter().all(|c| c.local_port > 0 || c.state != "Listen"));
 }
+
+/// Collects a real report (read-only), renders it redacted in both formats in memory
+/// and checks that this PC's user name and PC name are gone. Nothing is written to disk.
+#[test]
+#[ignore]
+fn system_report_redaction_live() {
+    use rustacer_core::report::{self, Format, Options};
+    let cancel = AtomicBool::new(false);
+    let data = report::collect(true, &cancel, &mut |s| println!("collecting {s}")).unwrap();
+    println!(
+        "{} drivers, {} startup, {} apps, {} services, {} drives",
+        data.drivers.len(),
+        data.startup.len(),
+        data.apps.len(),
+        data.services.as_ref().map_or(0, Vec::len),
+        data.health.drives.len()
+    );
+    let user = std::env::var("USERNAME").unwrap_or_default().to_lowercase();
+    let pc = data.pc_name.to_lowercase();
+    for format in [Format::Html, Format::Json] {
+        let opts = Options {
+            format,
+            include_identity: false,
+            include_services: true,
+        };
+        let out = report::render(&data, &opts);
+        println!("{format:?}: {} bytes", out.len());
+        let low = out.to_lowercase();
+        if user.len() >= 4 {
+            assert!(!low.contains(&user), "{format:?} still has the user name");
+        }
+        if pc.len() >= 4 {
+            assert!(!low.contains(&pc), "{format:?} still has the PC name");
+        }
+        assert!(out.len() > 1000);
+    }
+    // The real export path, into a temp folder (never the user's folders).
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("report.json");
+    let opts = Options {
+        format: Format::Json,
+        ..Options::default()
+    };
+    report::export(&file, &opts, &cancel, &mut |_| {}).unwrap();
+    let text = std::fs::read_to_string(&file).unwrap();
+    assert!(text.trim_start().starts_with('{') && text.trim_end().ends_with('}'));
+    if user.len() >= 4 {
+        assert!(!text.to_lowercase().contains(&user));
+    }
+}

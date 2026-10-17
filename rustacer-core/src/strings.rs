@@ -34,6 +34,7 @@ fn en(key: &'static str) -> &'static str {
         "common.refresh" => "Refresh",
         "common.cancel" => "Cancel",
         "common.confirm" => "Confirm",
+        "report.export" => "Export system report...",
         "procs.list" => "Processes",
         "procs.network" => "Network connections",
         "tray.open" => "Open Rustacer",

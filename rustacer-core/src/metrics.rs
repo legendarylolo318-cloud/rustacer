@@ -86,6 +86,20 @@ pub fn system_info() -> SystemInfo {
     }
 }
 
+/// Fixed and removable volumes with their sizes (no live counters).
+pub fn disk_usages() -> Vec<DiskUsage> {
+    Disks::new_with_refreshed_list()
+        .iter()
+        .filter(|d| d.total_space() > 0)
+        .map(|d| DiskUsage {
+            mount: d.mount_point().to_string_lossy().into_owned(),
+            name: d.name().to_string_lossy().into_owned(),
+            total: d.total_space(),
+            available: d.available_space(),
+        })
+        .collect()
+}
+
 pub fn gpu_names() -> Vec<String> {
     #[derive(Deserialize)]
     #[serde(rename = "Win32_VideoController")]

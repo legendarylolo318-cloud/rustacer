@@ -12,6 +12,7 @@ use rustacer_core::drivers::wua::{self, DriverUpdate, InstallSummary, Progress};
 use rustacer_core::metrics::{self, Sampler, Snapshot, SystemInfo};
 use rustacer_core::netconn::{self, Connection};
 use rustacer_core::processes::{ProcessInfo, ProcessMonitor};
+use rustacer_core::report::{self, Format as ReportFormat};
 use rustacer_core::services::{self, Action as SvcAction, ServiceInfo};
 use rustacer_core::startup::{self, StartupEntry};
 use rustacer_core::tray::{self, Tray, TrayEvent};
@@ -100,6 +101,8 @@ pub enum Msg {
     Boot(Result<Box<BootReport>, String>),
     Health(Result<Box<HealthReport>, String>),
     Net(Result<Vec<Connection>, String>),
+    ReportProgress(String),
+    ReportDone(Result<PathBuf, String>),
     Upgrades(Result<Box<UpgradeList>, String>),
     UpgradeProgress(String),
     /// (package id, outcome text) for every package that was attempted.
@@ -283,6 +286,31 @@ pub struct DiskState {
     pub recycling: bool,
 }
 
+pub struct ReportState {
+    pub open: bool,
+    pub format: ReportFormat,
+    /// Off by default: the PC name and user name are redacted.
+    pub include_identity: bool,
+    pub include_services: bool,
+    pub running: bool,
+    pub progress: String,
+    pub cancel: Arc<AtomicBool>,
+}
+
+impl Default for ReportState {
+    fn default() -> Self {
+        Self {
+            open: false,
+            format: ReportFormat::Html,
+            include_identity: false,
+            include_services: false,
+            running: false,
+            progress: String::new(),
+            cancel: Arc::new(AtomicBool::new(false)),
+        }
+    }
+}
+
 #[derive(Default)]
 pub struct HealthState {
     pub report: Option<HealthReport>,
@@ -391,6 +419,7 @@ pub struct App {
     pub drivers: DriversState,
     pub disk: DiskState,
     pub health: HealthState,
+    pub report: ReportState,
     pub services: ServicesState,
     pub procs: ProcState,
     pub uninst: UninstState,
@@ -555,6 +584,7 @@ impl App {
             cleaner: CleanerState::default(),
             drivers: DriversState::default(),
             health: HealthState::default(),
+            report: ReportState::default(),
             disk: DiskState {
                 sort_col: 1,
                 ..Default::default()
@@ -992,6 +1022,17 @@ impl App {
                         Err(e) => self.health.error = Some(e),
                     }
                 }
+                Msg::ReportProgress(p) => self.report.progress = p,
+                Msg::ReportDone(r) => {
+                    self.report.running = false;
+                    self.report.progress.clear();
+                    match r {
+                        Ok(p) => {
+                            self.notify(false, format!("System report saved to {}", p.display()))
+                        }
+                        Err(e) => self.notify(true, e),
+                    }
+                }
                 Msg::Net(r) => {
                     let n = &mut self.procs.net;
                     n.loading = false;
@@ -1249,6 +1290,137 @@ impl App {
                     .map_err(|e| e.to_string()),
             ));
         });
+    }
+
+    /// Open the export options dialog (the choices start private: identity redacted).
+    pub fn open_report_dialog(&mut self) {
+        if self.report.running {
+            return;
+        }
+        self.report.include_identity = false;
+        self.report.open = true;
+    }
+
+    /// Ask where to save, then collect and write the report on a worker thread.
+    fn start_report(&mut self) {
+        let (name, label, ext) = match self.report.format {
+            ReportFormat::Html => ("rustacer-report.html", "HTML page", "html"),
+            ReportFormat::Json => ("rustacer-report.json", "JSON file", "json"),
+        };
+        // The native save dialog is modal by design. Nothing is written anywhere else.
+        let Some(mut path) = rfd::FileDialog::new()
+            .set_file_name(name)
+            .add_filter(label, &[ext])
+            .save_file()
+        else {
+            return;
+        };
+        if path
+            .extension()
+            .is_none_or(|e| !e.eq_ignore_ascii_case(ext))
+        {
+            path.set_extension(ext);
+        }
+        self.report.open = false;
+        self.report.running = true;
+        self.report.progress = "Starting...".into();
+        self.report.cancel.store(false, Ordering::Relaxed);
+        let cancel = self.report.cancel.clone();
+        let opts = report::Options {
+            format: self.report.format,
+            include_identity: self.report.include_identity,
+            include_services: self.report.include_services,
+        };
+        self.spawn(move |bus| {
+            let b2 = bus.clone();
+            let r = report::export(&path, &opts, &cancel, &mut |p| {
+                b2.send(Msg::ReportProgress(p.to_string()))
+            });
+            bus.send(Msg::ReportDone(match r {
+                Ok(()) => Ok(path),
+                Err(rustacer_core::CoreError::Cancelled) => {
+                    Err("Report export cancelled; nothing was written.".to_string())
+                }
+                Err(e) => Err(format!("Could not save the report: {e}")),
+            }));
+        });
+    }
+
+    fn report_dialogs(&mut self, ctx: &Context) {
+        if self.report.running {
+            egui::Window::new("Exporting system report")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .show(ctx, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label(format!("Reading: {}", self.report.progress));
+                    });
+                    if ui.button("Cancel").clicked() {
+                        self.report.cancel.store(true, Ordering::Relaxed);
+                    }
+                });
+            return;
+        }
+        if !self.report.open {
+            return;
+        }
+        let mut go = false;
+        let mut close = false;
+        egui::Window::new("Export system report")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.set_max_width(460.0);
+                ui.label("Saves system information, drives and their health, non-Microsoft drivers, startup entries and installed apps to a file you choose.");
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    ui.label("Format");
+                    ui.selectable_value(&mut self.report.format, ReportFormat::Html, "HTML page");
+                    ui.selectable_value(&mut self.report.format, ReportFormat::Json, "JSON");
+                });
+                ui.checkbox(
+                    &mut self.report.include_services,
+                    "Include third-party services (programs outside the Windows folder)",
+                );
+                ui.checkbox(
+                    &mut self.report.include_identity,
+                    "Include the PC name and user name (otherwise they are hidden)",
+                );
+                if self.report.include_identity {
+                    ui.colored_label(
+                        Color32::from_rgb(0xf5, 0xa6, 0x23),
+                        "The file will contain your PC name, user name and user folder paths. Think before sharing it.",
+                    );
+                } else {
+                    ui.label(
+                        egui::RichText::new(
+                            "The PC name, the user name and C:\\Users\\<name> paths are replaced with placeholders.",
+                        )
+                        .weak(),
+                    );
+                }
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if ui
+                        .add(crate::widgets::primary_btn(ui, "Choose file and export"))
+                        .clicked()
+                    {
+                        go = true;
+                    }
+                    if ui.button("Cancel").clicked() {
+                        close = true;
+                    }
+                });
+            });
+        if close {
+            self.report.open = false;
+        }
+        if go {
+            self.start_report();
+        }
     }
 
     /// One immediate read of the connection tables (the 2 s poll takes over afterwards).
@@ -1743,6 +1915,7 @@ impl eframe::App for App {
         self.drivers.cancel.store(true, Ordering::Relaxed);
         self.disk.cancel.store(true, Ordering::Relaxed);
         self.uninst.updates.cancel.store(true, Ordering::Relaxed);
+        self.report.cancel.store(true, Ordering::Relaxed);
         self.tray = None; // removes the icon and joins the tray thread
         for t in self.threads.drain(..) {
             let _ = t.join();
@@ -1768,6 +1941,7 @@ impl eframe::App for App {
         self.handle_start_hidden(&ctx);
         self.tray_test_step(&ctx);
         self.confirm_dialog(&ctx);
+        self.report_dialogs(&ctx);
         self.driver_dialogs(&ctx);
         // History/gauges move on their own via sampler wakeups; keep a slow tick for notices.
         ctx.request_repaint_after(Duration::from_millis(500));

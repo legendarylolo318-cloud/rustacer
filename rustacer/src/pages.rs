@@ -86,7 +86,7 @@ pub fn show(app: &mut App, ui: &mut Ui, ctx: &Context) {
     let elevated = app.elevated;
     let needs_admin = matches!(
         app.page,
-        Page::Cleaner | Page::Drivers | Page::Services | Page::Startup | Page::Health
+        Page::Cleaner | Page::Drivers | Page::Services | Page::Startup
     );
     if admin_banner(ui, elevated, needs_admin) {
         app.restart_as_admin(ctx);
@@ -116,7 +116,17 @@ fn search_box(ui: &mut Ui, text: &mut String) {
 // ---------------- dashboard ----------------
 
 fn dashboard(app: &mut App, ui: &mut Ui) {
-    heading(ui, "Dashboard");
+    heading(ui, tr(Lang::English, "nav.dashboard"));
+    if ui
+        .add_enabled(
+            !app.report.running,
+            egui::Button::new(tr(Lang::English, "report.export")),
+        )
+        .clicked()
+    {
+        app.open_report_dialog();
+    }
+    ui.add_space(4.0);
     egui::ScrollArea::vertical().show(ui, |ui| {
         let s = &app.snap;
         ui.horizontal_wrapped(|ui| {
@@ -1202,8 +1212,10 @@ fn health_page(app: &mut App, ui: &mut Ui, ctx: &Context) {
                 }
             });
         }
-        for n in &rep.notes {
-            ui.label(RichText::new(n).weak());
+        if app.elevated {
+            for n in &rep.notes {
+                ui.label(RichText::new(n).weak());
+            }
         }
         for d in &rep.drives {
             ui.add_space(6.0);
@@ -3058,6 +3070,18 @@ fn settings_body(app: &mut App, ui: &mut Ui) {
                     }
                     Err(e) => app.notify(true, e.to_string()),
                 }
+            }
+            ui.end_row();
+            ui.label("System report");
+            if ui
+                .add_enabled(
+                    !app.report.running,
+                    egui::Button::new(tr(Lang::English, "report.export")),
+                )
+                .on_hover_text("Saves an HTML or JSON report. The PC name and user name are hidden unless you include them.")
+                .clicked()
+            {
+                app.open_report_dialog();
             }
             ui.end_row();
             ui.label("System tray");

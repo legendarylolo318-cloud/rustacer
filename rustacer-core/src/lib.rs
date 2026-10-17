@@ -11,6 +11,7 @@ pub mod error;
 pub mod metrics;
 pub mod netconn;
 pub mod processes;
+pub mod report;
 pub mod services;
 pub mod startup;
 pub mod strings;
