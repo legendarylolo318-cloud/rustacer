@@ -84,7 +84,14 @@ pub fn parse_iso_time(s: &str) -> Option<i64> {
     let h = t.next()?.parse::<i64>().ok()?;
     let mi = t.next()?.parse::<i64>().ok()?;
     let sec = t.next()?.split('.').next()?.parse::<i64>().ok()?;
-    if !(1..=12).contains(&m) || !(1..=31).contains(&dd) || h > 23 || mi > 59 || sec > 60 {
+    // A bounded year keeps the arithmetic below far from overflow on garbage input.
+    if !(1601..=9999).contains(&y)
+        || !(1..=12).contains(&m)
+        || !(1..=31).contains(&dd)
+        || !(0..=23).contains(&h)
+        || !(0..=59).contains(&mi)
+        || !(0..=60).contains(&sec)
+    {
         return None;
     }
     Some(days_from_civil(y, m, dd) * 86_400 + h * 3600 + mi * 60 + sec)
@@ -229,6 +236,14 @@ fn text(ev: &RawEvent, key: &str) -> String {
     ev.data.get(key).cloned().unwrap_or_default()
 }
 
+/// The first non-empty value among `keys`.
+fn first_text(ev: &RawEvent, keys: &[&str]) -> String {
+    keys.iter()
+        .map(|k| text(ev, k))
+        .find(|v| !v.is_empty())
+        .unwrap_or_default()
+}
+
 /// Turn raw events into boots and slow-app summaries.
 pub fn build_report(events: &[RawEvent], source: &str) -> BootReport {
     let mut boots = Vec::new();
@@ -250,12 +265,15 @@ pub fn build_report(events: &[RawEvent], source: &str) -> BootReport {
                     boot_ms,
                     main_path_ms: num(ev, "MainPathBootTime"),
                     post_boot_ms: num(ev, "BootPostBootTime"),
-                    degraded: text(ev, "IsDegradation").eq_ignore_ascii_case("true"),
+                    // The manifest names it BootIsDegradation; accept the short form too.
+                    degraded: first_text(ev, &["BootIsDegradation", "IsDegradation"])
+                        .eq_ignore_ascii_case("true"),
                 });
             }
             101 => {
                 let name = text(ev, "Name");
-                let path = text(ev, "FullPath");
+                // Event 101 logs the executable in "Path" (older tools call it FullPath).
+                let path = first_text(ev, &["Path", "FullPath"]);
                 if name.is_empty() && path.is_empty() {
                     continue;
                 }
@@ -400,10 +418,10 @@ fn render_xml(event: EVT_HANDLE) -> Result<String> {
             &mut props,
         )
     };
-    if let Err(e) = &first {
+    if let Err(e) = first {
         // ERROR_INSUFFICIENT_BUFFER (122) is the expected answer.
         if e.code().0 & 0xFFFF != 122 {
-            return Err(CoreError::from(first.unwrap_err()));
+            return Err(CoreError::from(e));
         }
     }
     let mut buf = vec![0u16; (used as usize).div_ceil(2) + 1];
@@ -511,9 +529,9 @@ mod tests {
     use super::*;
     use crate::startup::{Hive, Source};
 
-    const EVENT_100: &str = r#"<Event xmlns="http://schemas.microsoft.com/win/2004/08/events/event"><System><Provider Name="Microsoft-Windows-Diagnostics-Performance" Guid="{CFC18EC0-96B1-4EBA-961B-622CAEE05B0A}"/><EventID>100</EventID><Version>2</Version><Level>4</Level><TimeCreated SystemTime="2026-10-16T08:12:45.1234567Z"/><Channel>Microsoft-Windows-Diagnostics-Performance/Operational</Channel><Computer>SECRET-PC</Computer></System><EventData><Data Name="BootTsVersion">2</Data><Data Name="BootStartTime">2026-10-16T08:10:03.100000000Z</Data><Data Name="BootEndTime">2026-10-16T08:11:45.000000000Z</Data><Data Name="SystemBootInstance">123</Data><Data Name="BootTime">42123</Data><Data Name="MainPathBootTime">30500</Data><Data Name="BootPostBootTime">11623</Data><Data Name="IsDegradation">true</Data></EventData></Event>"#;
+    const EVENT_100: &str = r#"<Event xmlns="http://schemas.microsoft.com/win/2004/08/events/event"><System><Provider Name="Microsoft-Windows-Diagnostics-Performance" Guid="{CFC18EC0-96B1-4EBA-961B-622CAEE05B0A}"/><EventID>100</EventID><Version>2</Version><Level>4</Level><TimeCreated SystemTime="2026-10-16T08:12:45.1234567Z"/><Channel>Microsoft-Windows-Diagnostics-Performance/Operational</Channel><Computer>SECRET-PC</Computer></System><EventData><Data Name="BootTsVersion">2</Data><Data Name="BootStartTime">2026-10-16T08:10:03.100000000Z</Data><Data Name="BootEndTime">2026-10-16T08:11:45.000000000Z</Data><Data Name="SystemBootInstance">123</Data><Data Name="BootTime">42123</Data><Data Name="MainPathBootTime">30500</Data><Data Name="BootPostBootTime">11623</Data><Data Name="BootIsDegradation">true</Data></EventData></Event>"#;
 
-    const EVENT_101: &str = r#"<Event xmlns="http://schemas.microsoft.com/win/2004/08/events/event"><System><EventID>101</EventID><TimeCreated SystemTime="2026-10-16T08:12:46.0000000Z"/></System><EventData><Data Name="Name">OneDrive.exe</Data><Data Name="FriendlyName">Microsoft OneDrive &amp; Sync</Data><Data Name="FullPath">C:\Users\bob\AppData\Local\Microsoft\OneDrive\OneDrive.exe</Data><Data Name="Version">24.1</Data><Data Name="TotalTime">15200</Data><Data Name="DegradationTime">9100</Data><Data Name="Incidents">1</Data><Data Name="Empty"/></EventData></Event>"#;
+    const EVENT_101: &str = r#"<Event xmlns="http://schemas.microsoft.com/win/2004/08/events/event"><System><EventID>101</EventID><TimeCreated SystemTime="2026-10-16T08:12:46.0000000Z"/></System><EventData><Data Name="Name">OneDrive.exe</Data><Data Name="FriendlyName">Microsoft OneDrive &amp; Sync</Data><Data Name="Path">C:\Users\bob\AppData\Local\Microsoft\OneDrive\OneDrive.exe</Data><Data Name="Version">24.1</Data><Data Name="TotalTime">15200</Data><Data Name="DegradationTime">9100</Data><Data Name="Incidents">1</Data><Data Name="Empty"/></EventData></Event>"#;
 
     #[test]
     fn iso_time_parses() {
@@ -535,7 +553,7 @@ mod tests {
         assert_eq!(v[0].id, 100);
         assert_eq!(v[0].time_unix, 1_792_138_365);
         assert_eq!(v[0].data["BootTime"], "42123");
-        assert_eq!(v[0].data["IsDegradation"], "true");
+        assert_eq!(v[0].data["BootIsDegradation"], "true");
     }
 
     #[test]
@@ -664,5 +682,44 @@ mod tests {
             None
         );
         assert_eq!(match_startup(&app("", "", ""), &entries), None);
+    }
+
+    #[test]
+    fn real_manifest_field_names_are_read() {
+        // Field names from the Microsoft-Windows-Diagnostics-Performance manifest.
+        let r = build_report(&parse_events(&format!("{EVENT_100}{EVENT_101}")), "t");
+        assert!(r.boots[0].degraded, "BootIsDegradation");
+        assert!(r.slow_apps[0].path.ends_with("OneDrive.exe"), "Path");
+        // The older spelling still works.
+        let old = EVENT_101.replace("\"Path\"", "\"FullPath\"");
+        let r = build_report(&parse_events(&old), "t");
+        assert!(r.slow_apps[0].path.ends_with("OneDrive.exe"));
+    }
+
+    #[test]
+    fn parser_never_panics_on_truncated_or_odd_xml() {
+        let blob = format!("{EVENT_100}{EVENT_101}");
+        // Every prefix and every suffix, cut on char boundaries.
+        for (i, _) in blob.char_indices() {
+            let _ = build_report(&parse_events(&blob[..i]), "t");
+            let _ = build_report(&parse_events(&blob[i..]), "t");
+        }
+        for odd in [
+            "<Event><EventID>",
+            "<Event><EventID>abc</EventID></Event>",
+            "<Event><EventID>100</EventID><Data Name=\"BootTime\">-5</Data></Event>",
+            "<Event><EventID>100<EventID></Event>",
+            "<Event><EventID>100</EventID><TimeCreated SystemTime=\"99999999999-01-01T00:00:00Z\"/></Event>",
+            "<Event><EventID>101</EventID><Data Name=\"Name\"></Event>",
+            "<Event><EventID>101</EventID><Data Name='Name'>x</Data></Event>",
+            "<Event><EventID>4294967296</EventID></Event>",
+            "</Event><Event>",
+        ] {
+            let _ = build_report(&parse_events(odd), "t");
+        }
+        assert_eq!(parse_iso_time("99999999999-01-01T00:00:00Z"), None);
+        assert_eq!(parse_iso_time("2026-01-01T24:00:00Z"), None);
+        assert_eq!(parse_iso_time("2026-01-01T-1:00:00Z"), None);
+        assert_eq!(parse_iso_time("T"), None);
     }
 }
