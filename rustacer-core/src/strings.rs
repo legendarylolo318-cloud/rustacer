@@ -33,6 +33,8 @@ fn en(key: &'static str) -> &'static str {
         "common.refresh" => "Refresh",
         "common.cancel" => "Cancel",
         "common.confirm" => "Confirm",
+        "startup.entries" => "Startup entries",
+        "startup.boot" => "Boot performance",
         "common.browse" => "Browse...",
         "disk.scan" => "Scan",
         "disk.folders" => "Largest folders",

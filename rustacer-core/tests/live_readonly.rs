@@ -2,7 +2,7 @@
 //! run with `cargo test -p rustacer-core --test live_readonly -- --ignored --nocapture`.
 //! Nothing here installs, deletes or modifies anything.
 
-use rustacer_core::{drivers, metrics, services, startup, uninstaller};
+use rustacer_core::{bootperf, drivers, metrics, services, startup, uninstaller};
 use std::sync::atomic::AtomicBool;
 
 #[test]
@@ -72,4 +72,42 @@ fn windows_update_search_only() {
         }
         Err(e) => panic!("search failed: {e}"),
     }
+}
+
+/// Boot log: needs admin. Not elevated, it must fail with NeedsAdmin instead of guessing.
+#[test]
+#[ignore]
+fn boot_performance_log() {
+    match bootperf::read_boot_report() {
+        Ok(r) => {
+            println!(
+                "{} boots, {} slow apps (via {})",
+                r.boots.len(),
+                r.slow_apps.len(),
+                r.source
+            );
+            if let Some((last, avg, best, worst)) = r.summary() {
+                println!("latest {last} ms, avg {avg} ms, best {best} ms, worst {worst} ms");
+            }
+            for a in r.slow_apps.iter().take(5) {
+                println!("  {} slowed boot by {} ms", a.name, a.latest_degradation_ms);
+            }
+        }
+        Err(rustacer_core::CoreError::NeedsAdmin) => {
+            assert!(!rustacer_core::admin::is_elevated());
+            println!("not elevated: NeedsAdmin, as expected");
+        }
+        Err(e) => panic!("boot log failed: {e}"),
+    }
+}
+
+/// Exercises EvtQuery/EvtNext/EvtRender and the XML parser on the Application log, which
+/// any user may read.
+#[test]
+#[ignore]
+fn event_log_api_pipeline() {
+    let v = bootperf::query_events("Application", "*", 20).unwrap();
+    println!("{} events from the Application log", v.len());
+    assert!(!v.is_empty());
+    assert!(v.iter().all(|e| e.id > 0 && e.time_unix > 0));
 }

@@ -1,6 +1,7 @@
 //! Rustacer core: all system logic, no GUI.
 
 pub mod admin;
+pub mod bootperf;
 pub mod cleaner;
 pub mod config;
 pub mod diskusage;

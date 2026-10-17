@@ -93,7 +93,7 @@ pub fn show(app: &mut App, ui: &mut Ui, ctx: &Context) {
     }
     match app.page {
         Page::Dashboard => dashboard(app, ui),
-        Page::Startup => startup(app, ui),
+        Page::Startup => startup(app, ui, ctx),
         Page::Cleaner => cleaner(app, ui),
         Page::DiskAnalyzer => disk_page(app, ui),
         Page::Drivers => drivers(app, ui),
@@ -218,8 +218,26 @@ fn format_boot(unix: u64) -> String {
 
 // ---------------- startup ----------------
 
-fn startup(app: &mut App, ui: &mut Ui) {
-    heading(ui, "Startup Apps");
+fn startup(app: &mut App, ui: &mut Ui, ctx: &Context) {
+    heading(ui, tr(Lang::English, "nav.startup"));
+    ui.horizontal(|ui| {
+        for (t, key) in [
+            (StartupTab::Entries, "startup.entries"),
+            (StartupTab::Boot, "startup.boot"),
+        ] {
+            if ui
+                .selectable_label(app.startup.tab == t, tr(Lang::English, key))
+                .clicked()
+            {
+                app.startup.tab = t;
+            }
+        }
+    });
+    ui.separator();
+    if app.startup.tab == StartupTab::Boot {
+        boot_tab(app, ui, ctx);
+        return;
+    }
     let mut act: Option<Act> = None;
     ui.horizontal(|ui| {
         search_box(ui, &mut app.startup.filter);
@@ -369,6 +387,224 @@ fn startup(app: &mut App, ui: &mut Ui) {
             None,
             a,
         );
+    }
+}
+
+// ---------------- boot performance ----------------
+
+fn format_ms(ms: u64) -> String {
+    format!("{:.1} s", ms as f64 / 1000.0)
+}
+
+fn boot_tab(app: &mut App, ui: &mut Ui, ctx: &Context) {
+    ui.label(
+        RichText::new(
+            "Read-only. Uses boot events 100 and 101 from the Windows Diagnostics-Performance log.",
+        )
+        .weak(),
+    );
+    if !app.elevated {
+        ui.add_space(6.0);
+        ui.colored_label(
+            ui.visuals().warn_fg_color,
+            "Boot performance needs administrator rights to read the Windows event log.",
+        );
+        if ui
+            .add(primary_btn(ui, tr(Lang::English, "admin.restart")))
+            .clicked()
+        {
+            app.restart_as_admin(ctx);
+        }
+        return;
+    }
+    if !app.startup.boot.loaded && !app.startup.boot.loading {
+        app.load_boot();
+    }
+    ui.horizontal(|ui| {
+        if ui.button(tr(Lang::English, "common.refresh")).clicked() {
+            app.load_boot();
+        }
+        if app.startup.boot.loading {
+            ui.spinner();
+        }
+    });
+    if let Some(e) = &app.startup.boot.error {
+        ui.colored_label(Color32::from_rgb(0xe5, 0x48, 0x4d), e);
+    }
+    let Some(rep) = &app.startup.boot.report else {
+        return;
+    };
+    let Some((last, avg, best, worst)) = rep.summary() else {
+        ui.label("Windows has not recorded any boot-time events (the log may have been cleared or the diagnostics turned off).");
+        return;
+    };
+    let degraded = rep.boots.last().is_some_and(|b| b.degraded);
+    ui.label(
+        RichText::new(format!(
+            "Latest boot {}{}.  Average {}.  Best {}.  Worst {}.  ({} boots, via {})",
+            format_ms(last),
+            if degraded {
+                " (Windows flagged it as slower than usual)"
+            } else {
+                ""
+            },
+            format_ms(avg),
+            format_ms(best),
+            format_ms(worst),
+            rep.boots.len(),
+            rep.source
+        ))
+        .strong(),
+    );
+    let total = rep.boots.len();
+    let mk = |f: &dyn Fn(&rustacer_core::bootperf::BootRecord) -> f64| -> PlotPoints<'static> {
+        rep.boots
+            .iter()
+            .enumerate()
+            .map(|(i, b)| [(i + 1) as f64, f(b)])
+            .collect::<Vec<_>>()
+            .into()
+    };
+    let plot_h = (ui.available_height() * 0.38).clamp(120.0, 360.0);
+    ui.label(RichText::new("Boot time history (seconds, oldest boot on the left)").strong());
+    let resp = Plot::new("boot-history")
+        .height(plot_h)
+        .allow_zoom(false)
+        .allow_drag(false)
+        .allow_scroll(false)
+        .include_y(0.0)
+        .include_x(0.5)
+        .include_x(total as f64 + 0.5)
+        .x_axis_label("Boot number")
+        .y_axis_label("seconds")
+        .legend(egui_plot::Legend::default())
+        .label_formatter(|pos| match pos {
+            egui_plot::HoverPosition::NearDataPoint {
+                plot_name,
+                position,
+                ..
+            } => Some(format!(
+                "{plot_name}
+boot {:.0}: {:.1} s",
+                position.x, position.y
+            )),
+            egui_plot::HoverPosition::Elsewhere { .. } => None,
+        })
+        .show(ui, |pu| {
+            pu.line(Line::new(
+                "Total boot time",
+                mk(&|b| b.boot_ms as f64 / 1000.0),
+            ));
+            pu.line(Line::new(
+                "Until the desktop was usable",
+                mk(&|b| b.main_path_ms as f64 / 1000.0),
+            ));
+            pu.points(
+                egui_plot::Points::new("Total boot time", mk(&|b| b.boot_ms as f64 / 1000.0))
+                    .radius(3.0),
+            );
+        });
+    // The numbers above are the text equivalent of this graph for screen readers.
+    resp.response.widget_info(|| {
+        egui::WidgetInfo::labeled(
+            egui::WidgetType::Other,
+            true,
+            format!(
+                "Boot time history graph: {total} boots, latest {}, average {}, best {}, worst {}",
+                format_ms(last),
+                format_ms(avg),
+                format_ms(best),
+                format_ms(worst)
+            ),
+        )
+    });
+    ui.add_space(6.0);
+    ui.label(RichText::new("Applications that slowed boot").strong());
+    if rep.slow_apps.is_empty() {
+        ui.label("Windows has not logged any application that slowed boot.");
+        return;
+    }
+    let mut jump: Option<usize> = None;
+    let (k, salt) = table_layout(ui);
+    TableBuilder::new(ui)
+        .id_salt(salt)
+        .striped(true)
+        .resizable(true)
+        .column(Column::initial(k * 220.0).clip(true))
+        .column(Column::initial(k * 100.0))
+        .column(Column::initial(k * 90.0))
+        .column(Column::initial(k * 80.0))
+        .column(Column::initial(k * 140.0).clip(true))
+        .column(
+            Column::remainder()
+                .resizable(false)
+                .at_least(80.0)
+                .clip(true),
+        )
+        .header(ROW_H, |mut h| {
+            for t in [
+                "Application",
+                "Slowed boot by",
+                "Worst",
+                "Boots",
+                "Last seen (UTC)",
+                "Startup entry",
+            ] {
+                h.col(|ui| {
+                    ui.strong(t);
+                });
+            }
+        })
+        .body(|body| {
+            body.rows(ROW_H, rep.slow_apps.len(), |mut row| {
+                let a = &rep.slow_apps[row.index()];
+                row.col(|ui| {
+                    let label = if a.friendly_name.is_empty() {
+                        &a.name
+                    } else {
+                        &a.friendly_name
+                    };
+                    ui.label(label).on_hover_text(&a.path);
+                });
+                row.col(|ui| {
+                    ui.label(format_ms(a.latest_degradation_ms));
+                });
+                row.col(|ui| {
+                    ui.label(format_ms(a.worst_degradation_ms));
+                });
+                row.col(|ui| {
+                    ui.label(a.boots.to_string());
+                });
+                row.col(|ui| {
+                    ui.label(format_boot(a.latest_unix.max(0) as u64));
+                });
+                row.col(|ui| {
+                    match rustacer_core::bootperf::match_startup(a, &app.startup.entries) {
+                        Some(i) => {
+                            let e = &app.startup.entries[i];
+                            let text = format!(
+                                "{} ({})",
+                                e.name,
+                                if e.enabled { "enabled" } else { "disabled" }
+                            );
+                            if ui
+                                .link(text)
+                                .on_hover_text("Show this entry in the startup list")
+                                .clicked()
+                            {
+                                jump = Some(i);
+                            }
+                        }
+                        None => {
+                            ui.label(RichText::new("not a startup entry").weak());
+                        }
+                    }
+                });
+            });
+        });
+    if let Some(i) = jump {
+        app.startup.filter = app.startup.entries[i].name.clone();
+        app.startup.tab = StartupTab::Entries;
     }
 }
 

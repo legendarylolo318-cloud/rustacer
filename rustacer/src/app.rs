@@ -1,4 +1,5 @@
 use eframe::egui::{self, Color32, Context};
+use rustacer_core::bootperf::{self, BootReport};
 use rustacer_core::cleaner::{self, Category, CleanReport, ScanResult};
 use rustacer_core::config::{Config, Theme};
 use rustacer_core::diskusage::{self, DiskReport, ScanProgress as DiskProgress};
@@ -89,6 +90,7 @@ pub enum Msg {
     DiskDone(Result<Box<DiskReport>, String>),
     /// Paths that were moved to the Recycle Bin from the disk analyzer.
     DiskRecycled(Vec<PathBuf>),
+    Boot(Result<Box<BootReport>, String>),
     Notice {
         error: bool,
         text: String,
@@ -173,8 +175,25 @@ pub struct CleanerState {
     pub report: Option<CleanReport>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum StartupTab {
+    #[default]
+    Entries,
+    Boot,
+}
+
+#[derive(Default)]
+pub struct BootState {
+    pub report: Option<BootReport>,
+    pub loading: bool,
+    pub loaded: bool,
+    pub error: Option<String>,
+}
+
 #[derive(Default)]
 pub struct StartupState {
+    pub tab: StartupTab,
+    pub boot: BootState,
     pub entries: Vec<StartupEntry>,
     pub loading: bool,
     pub filter: String,
@@ -318,21 +337,30 @@ pub struct App {
     pub redact: bool,
 }
 
-const SMOKE_STEPS: [(Page, Option<DriverTab>); 14] = [
-    (Page::Dashboard, None),
-    (Page::Startup, None),
-    (Page::Cleaner, None),
-    (Page::DiskAnalyzer, None),
-    (Page::Drivers, Some(DriverTab::Installed)),
-    (Page::Drivers, Some(DriverTab::Updates)),
-    (Page::Drivers, Some(DriverTab::Backup)),
-    (Page::Drivers, Some(DriverTab::Gpu)),
-    (Page::Drivers, Some(DriverTab::RestorePoints)),
-    (Page::Services, None),
-    (Page::Processes, None),
-    (Page::Uninstaller, None),
-    (Page::Resources, None),
-    (Page::Settings, None),
+/// A tab inside a page, for the smoke test and capture tours.
+#[derive(Debug, Clone, Copy)]
+pub enum Sub {
+    None,
+    Driver(DriverTab),
+    Startup(StartupTab),
+}
+
+const SMOKE_STEPS: &[(Page, Sub)] = &[
+    (Page::Dashboard, Sub::None),
+    (Page::Startup, Sub::Startup(StartupTab::Entries)),
+    (Page::Startup, Sub::Startup(StartupTab::Boot)),
+    (Page::Cleaner, Sub::None),
+    (Page::DiskAnalyzer, Sub::None),
+    (Page::Drivers, Sub::Driver(DriverTab::Installed)),
+    (Page::Drivers, Sub::Driver(DriverTab::Updates)),
+    (Page::Drivers, Sub::Driver(DriverTab::Backup)),
+    (Page::Drivers, Sub::Driver(DriverTab::Gpu)),
+    (Page::Drivers, Sub::Driver(DriverTab::RestorePoints)),
+    (Page::Services, Sub::None),
+    (Page::Processes, Sub::None),
+    (Page::Uninstaller, Sub::None),
+    (Page::Resources, Sub::None),
+    (Page::Settings, Sub::None),
 ];
 
 impl App {
@@ -601,6 +629,17 @@ impl App {
                         }
                     }
                 }
+                Msg::Boot(r) => {
+                    self.startup.boot.loading = false;
+                    self.startup.boot.loaded = true;
+                    match r {
+                        Ok(rep) => {
+                            self.startup.boot.error = None;
+                            self.startup.boot.report = Some(*rep);
+                        }
+                        Err(e) => self.startup.boot.error = Some(e),
+                    }
+                }
                 Msg::Notice { error, text } => self.notify(error, text),
                 Msg::Reload(Page::Drivers) if self.drivers.tab == DriverTab::RestorePoints => {
                     self.load_restore_points()
@@ -688,6 +727,15 @@ impl App {
         }
     }
 
+    /// Switch to a tab inside the current page.
+    pub fn show_sub(&mut self, sub: Sub) {
+        match sub {
+            Sub::None => {}
+            Sub::Driver(t) => self.drivers.tab = t,
+            Sub::Startup(t) => self.startup.tab = t,
+        }
+    }
+
     pub fn goto(&mut self, p: Page) {
         self.page = p;
         self.procs_active
@@ -768,6 +816,21 @@ impl App {
                 b2.send(Msg::DiskProgress(p.clone()))
             });
             bus.send(Msg::DiskDone(r.map(Box::new).map_err(|e| e.to_string())));
+        });
+    }
+
+    /// Read the boot-performance log (admin only) on a worker thread.
+    pub fn load_boot(&mut self) {
+        if self.startup.boot.loading {
+            return;
+        }
+        self.startup.boot.loading = true;
+        self.spawn(|bus| {
+            bus.send(Msg::Boot(
+                bootperf::read_boot_report()
+                    .map(Box::new)
+                    .map_err(|e| e.to_string()),
+            ));
         });
     }
 
@@ -1030,9 +1093,7 @@ impl App {
                 self.history.len()
             );
             self.goto(page);
-            if let Some(t) = tab {
-                self.drivers.tab = t;
-            }
+            self.show_sub(tab);
             self.smoke = Some((Some(Instant::now()), step));
             ctx.request_repaint();
             return;

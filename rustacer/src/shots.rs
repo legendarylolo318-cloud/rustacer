@@ -5,7 +5,7 @@
 //! * `--resize-test <dir>`: drives the window through small, large, maximized and
 //!   fullscreen states and captures pages in each, to catch layout bugs.
 
-use crate::app::{App, DriverTab, Page};
+use crate::app::{App, DriverTab, Page, StartupTab, Sub};
 use eframe::egui::{self, Context};
 use rustacer_core::config::Theme;
 use std::path::{Path, PathBuf};
@@ -32,6 +32,8 @@ struct Step {
     name: &'static str,
     page: Page,
     tab: Option<DriverTab>,
+    /// Tab inside the page (other than the driver tabs).
+    sub: Sub,
     prep: Prep,
     theme: Theme,
     win: Option<Win>,
@@ -46,6 +48,7 @@ fn step(name: &'static str, page: Page, tab: Option<DriverTab>, prep: Prep, them
         name,
         page,
         tab,
+        sub: Sub::None,
         prep,
         theme,
         win: None,
@@ -179,6 +182,18 @@ fn resize_tour() -> Vec<Step> {
     big.scale = 1.5;
     big.dwell = Duration::from_millis(2500);
     v.push(big);
+    // Tabs inside pages.
+    let tabs: Vec<(&'static str, Page, Sub)> = vec![(
+        "tab-startup-boot",
+        Page::Startup,
+        Sub::Startup(StartupTab::Boot),
+    )];
+    for (name, page, sub) in tabs {
+        let mut st = step(name, page, None, Prep::None, Theme::Dark);
+        st.sub = sub;
+        st.dwell = Duration::from_millis(1500);
+        v.push(st);
+    }
     v
 }
 
@@ -273,6 +288,7 @@ pub fn tick(app: &mut App, ctx: &Context) {
         if let Some(t) = st.tab {
             app.drivers.tab = t;
         }
+        app.show_sub(st.sub);
         match st.prep {
             Prep::None => {}
             Prep::ScanCleaner => app.scan_cleaner(),
