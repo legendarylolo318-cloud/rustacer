@@ -365,6 +365,10 @@ pub struct ProcState {
 #[derive(Default)]
 pub struct UpdatesState {
     pub items: Vec<(WingetUpgrade, bool)>,
+    /// Also list packages whose installed version winget cannot read. Off by default:
+    /// winget cannot tell whether they are out of date, and upgrading them can install a
+    /// second copy instead of updating the first.
+    pub show_unknown: bool,
     pub excluded: Vec<(WingetUpgrade, &'static str)>,
     pub note: Option<String>,
     pub error: Option<String>,

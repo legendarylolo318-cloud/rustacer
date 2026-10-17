@@ -2739,7 +2739,40 @@ fn app_updates(app: &mut App, ui: &mut Ui, ctx: &Context) {
         }
         ui.separator();
     }
-    if u.items.is_empty() {
+    use rustacer_core::uninstaller::version_unknown;
+    let n_unknown = u
+        .items
+        .iter()
+        .filter(|(p, _)| version_unknown(&p.version))
+        .count();
+    if n_unknown > 0 {
+        let r = ui.checkbox(
+            &mut u.show_unknown,
+            format!("Show {n_unknown} app(s) whose installed version winget cannot read"),
+        );
+        let r = r.on_hover_text(
+            "winget cannot tell whether these are out of date, so they are listed every time. Upgrading them can install a second copy next to the first instead of updating it.",
+        );
+        if r.changed() && !u.show_unknown {
+            // Never keep a hidden row ticked.
+            for (p, c) in u.items.iter_mut() {
+                if version_unknown(&p.version) {
+                    *c = false;
+                }
+            }
+        }
+        if u.show_unknown {
+            ui.colored_label(
+                ui.visuals().warn_fg_color,
+                "Apps with an Unknown version may be installed again as a second copy instead of being updated (Roblox does this). Check the Uninstaller afterwards.",
+            );
+        }
+    }
+    let show_unknown = u.show_unknown;
+    let visible: Vec<usize> = (0..u.items.len())
+        .filter(|&i| show_unknown || !version_unknown(&u.items[i].0.version))
+        .collect();
+    if visible.is_empty() {
         if u.checked && !u.checking && u.note.is_none() && u.error.is_none() {
             ui.label("Everything winget manages is up to date (apart from GPU drivers).");
         } else if !u.checked && !u.checking {
@@ -2748,10 +2781,11 @@ fn app_updates(app: &mut App, ui: &mut Ui, ctx: &Context) {
         return;
     }
     use rustacer_core::uninstaller::validate_winget_id;
-    let n_sel = u.items.iter().filter(|(_, c)| *c).count();
+    let n_sel = visible.iter().filter(|&&i| u.items[i].1).count();
     ui.horizontal_wrapped(|ui| {
         if ui.button("Select all").clicked() {
-            for (p, c) in u.items.iter_mut() {
+            for &i in &visible {
+                let (p, c) = &mut u.items[i];
                 *c = validate_winget_id(&p.id).is_ok();
             }
         }
@@ -2769,14 +2803,14 @@ fn app_updates(app: &mut App, ui: &mut Ui, ctx: &Context) {
             .clicked()
         {
             go = Some(
-                u.items
+                visible
                     .iter()
-                    .filter(|(_, c)| *c)
-                    .map(|(p, _)| p.clone())
+                    .filter(|&&i| u.items[i].1)
+                    .map(|&i| u.items[i].0.clone())
                     .collect(),
             );
         }
-        ui.label(RichText::new(format!("{} updates available", u.items.len())).weak());
+        ui.label(RichText::new(format!("{} updates available", visible.len())).weak());
     });
     let (k, salt) = table_layout(ui);
     TableBuilder::new(ui)
@@ -2802,9 +2836,8 @@ fn app_updates(app: &mut App, ui: &mut Ui, ctx: &Context) {
             }
         })
         .body(|body| {
-            let n = u.items.len();
-            body.rows(ROW_H, n, |mut row| {
-                let (p, c) = &mut u.items[row.index()];
+            body.rows(ROW_H, visible.len(), |mut row| {
+                let (p, c) = &mut u.items[visible[row.index()]];
                 let usable = validate_winget_id(&p.id).is_ok();
                 row.col(|ui| {
                     let r = ui.add_enabled(usable, egui::Checkbox::new(c, ""));
