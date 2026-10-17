@@ -24,6 +24,7 @@ All notable changes to this project are documented here. The format follows
 - Boot performance read the wrong event fields (`IsDegradation`, `FullPath`); the manifest uses `BootIsDegradation` and `Path`, so degraded boots and path matching never worked. The parser is now fuzzed on truncated XML and rejects out-of-range timestamps.
 - Move to Recycle Bin: refuses when the scanned folder was swapped for a junction after the scan, acts on the canonical path it checked, refuses alternate data streams, trailing-dot names, folders containing links, and drives where Windows would delete permanently (Recycle Bin off, policy, or item too big).
 - With Close to tray on, Restart as admin left the old copy running in the tray (two processes, two icons). A second launch now shows the running copy instead of adding an icon, and test runs ignore the tray settings so they always exit.
+- Drive Health showed n/a for every counter even as admin: the reliability counters are now read through each disk's association, as `Get-StorageReliabilityCounter` does. Fields a drive leaves blank say "not reported by the drive".
 - winget ids cut short with an ellipsis are refused.
 - Link-local IPv6 addresses show their scope id.
 - The HTML report escapes the health class attribute.
