@@ -1,15 +1,22 @@
 use crate::error::{CoreError, Result};
 use std::ffi::OsStr;
+use std::io::Read;
 use std::os::windows::ffi::OsStrExt;
 use std::os::windows::process::CommandExt;
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 use windows::core::PCWSTR;
+use windows::Win32::Foundation::{CloseHandle, HANDLE, WAIT_OBJECT_0};
 use windows::Win32::System::Com::{
     CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE,
     COINIT_MULTITHREADED,
 };
-use windows::Win32::UI::Shell::ShellExecuteW;
+use windows::Win32::System::Threading::{GetExitCodeProcess, WaitForSingleObject};
+use windows::Win32::UI::Shell::{
+    ShellExecuteExW, ShellExecuteW, SEE_MASK_NOASYNC, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW,
+};
 use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
 
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
@@ -88,6 +95,109 @@ pub fn run_hidden(program: &str, args: &[&str]) -> Result<(i32, String)> {
     let mut text = String::from_utf8_lossy(&out.stdout).into_owned();
     text.push_str(&String::from_utf8_lossy(&out.stderr));
     Ok((out.status.code().unwrap_or(-1), text))
+}
+
+/// Like [`run_hidden`], but polls `cancel` and kills the child when it is set.
+/// Returns `CoreError::Cancelled` in that case.
+pub fn run_hidden_cancellable(
+    program: &str,
+    args: &[&str],
+    cancel: &AtomicBool,
+) -> Result<(i32, String)> {
+    let mut child = Command::new(program)
+        .args(args)
+        .creation_flags(CREATE_NO_WINDOW)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    // Drain both pipes on their own threads so a full pipe can never stall the child.
+    fn drain<R: Read + Send + 'static>(r: Option<R>) -> std::thread::JoinHandle<Vec<u8>> {
+        std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            if let Some(mut r) = r {
+                let _ = r.read_to_end(&mut buf);
+            }
+            buf
+        })
+    }
+    let out_t = drain(child.stdout.take());
+    let err_t = drain(child.stderr.take());
+    let status = loop {
+        if cancel.load(Ordering::Relaxed) {
+            let _ = child.kill();
+            let _ = child.wait();
+            let _ = out_t.join();
+            let _ = err_t.join();
+            return Err(CoreError::Cancelled);
+        }
+        match child.try_wait()? {
+            Some(st) => break st,
+            None => std::thread::sleep(Duration::from_millis(100)),
+        }
+    };
+    let mut text = String::from_utf8_lossy(&out_t.join().unwrap_or_default()).into_owned();
+    text.push_str(&String::from_utf8_lossy(&err_t.join().unwrap_or_default()));
+    Ok((status.code().unwrap_or(-1), text))
+}
+
+/// Closes a process handle on drop.
+struct ProcessHandle(HANDLE);
+
+impl Drop for ProcessHandle {
+    fn drop(&mut self) {
+        if !self.0.is_invalid() {
+            // SAFETY: the handle came from ShellExecuteExW (SEE_MASK_NOCLOSEPROCESS) and is
+            // closed exactly once, here.
+            unsafe {
+                let _ = CloseHandle(self.0);
+            }
+        }
+    }
+}
+
+/// ShellExecute (so UAC and the program's own window show) and wait for the launched process
+/// to exit. Returns its exit code, or `None` if Windows did not hand back a process handle
+/// (for example when an existing instance handled the request).
+pub fn shell_execute_wait(verb: &str, file: &str, params: Option<&str>) -> Result<Option<u32>> {
+    let _com = ComGuard::sta();
+    let verb_w = wide(verb);
+    let file_w = wide(file);
+    let params_w = params.map(wide);
+    let mut info = SHELLEXECUTEINFOW {
+        cbSize: std::mem::size_of::<SHELLEXECUTEINFOW>() as u32,
+        fMask: SEE_MASK_NOCLOSEPROCESS | SEE_MASK_NOASYNC,
+        lpVerb: PCWSTR::from_raw(verb_w.as_ptr()),
+        lpFile: PCWSTR::from_raw(file_w.as_ptr()),
+        lpParameters: params_w
+            .as_ref()
+            .map_or(PCWSTR::null(), |p| PCWSTR::from_raw(p.as_ptr())),
+        nShow: SW_SHOWNORMAL.0,
+        ..Default::default()
+    };
+    // SAFETY: `info` is fully initialised and every string pointer in it refers to a live
+    // NUL-terminated buffer for the duration of the call.
+    unsafe { ShellExecuteExW(&mut info) }
+        .map_err(|e| CoreError::Windows(format!("Could not start '{file}': {e}")))?;
+    let proc = ProcessHandle(info.hProcess);
+    if proc.0.is_invalid() {
+        return Ok(None);
+    }
+    loop {
+        // SAFETY: `proc.0` is a valid process handle owned by `proc`.
+        let w = unsafe { WaitForSingleObject(proc.0, 1000) };
+        if w == WAIT_OBJECT_0 {
+            break;
+        }
+        if w.0 != 0x102 {
+            // Anything but WAIT_TIMEOUT is a failure of the wait itself.
+            return Err(CoreError::Windows("Waiting for the program failed.".into()));
+        }
+    }
+    let mut code = 0u32;
+    // SAFETY: the process has exited and `proc.0` is still valid; `code` is a valid out pointer.
+    unsafe { GetExitCodeProcess(proc.0, &mut code) }?;
+    Ok(Some(code))
 }
 
 /// ShellExecute with an explicit verb ("open", "runas", ...).

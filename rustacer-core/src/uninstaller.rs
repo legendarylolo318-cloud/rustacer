@@ -1,8 +1,11 @@
 //! Installed-application listing and uninstall launching.
 
 use crate::error::{CoreError, Result};
-use crate::util::{run_hidden, shell_execute, split_command_line};
+use crate::util::{
+    run_hidden, run_hidden_cancellable, shell_execute, shell_execute_wait, split_command_line,
+};
 use std::collections::HashMap;
+use std::sync::atomic::AtomicBool;
 use tracing::info;
 use winreg::enums::*;
 use winreg::RegKey;
@@ -226,15 +229,235 @@ pub fn list_winget() -> Result<Vec<WingetApp>> {
     Ok(parse_winget_list(&out))
 }
 
-pub fn winget_uninstall(id: &str) -> Result<()> {
-    if id.is_empty() || id.chars().any(|c| c.is_whitespace() || c == '"') {
-        return Err(CoreError::Blocked("Invalid winget package id.".into()));
+/// A winget package id is passed to winget as a single argument, so it must not contain
+/// anything that could split or alter the command line.
+pub fn validate_winget_id(id: &str) -> Result<()> {
+    let bad = id.is_empty()
+        || id.starts_with('-')
+        || id
+            .chars()
+            .any(|c| c.is_whitespace() || c.is_control() || "\"&|<>^%".contains(c));
+    if bad {
+        Err(CoreError::Blocked("Invalid winget package id.".into()))
+    } else {
+        Ok(())
     }
+}
+
+pub fn winget_uninstall(id: &str) -> Result<()> {
+    validate_winget_id(id)?;
     info!("winget uninstall {id}");
     shell_execute(
         "open",
         "winget",
         Some(&format!("uninstall --id {id} --exact")),
+    )
+}
+
+// ---------- winget upgrades ----------
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WingetUpgrade {
+    pub name: String,
+    pub id: String,
+    pub version: String,
+    pub available: String,
+    pub source: String,
+}
+
+/// Why a package is not offered for upgrade, if it is a GPU driver package. Display drivers
+/// are only ever updated from the vendor's own page (see the Driver Updater GPU tab).
+/// Matches on the winget id and the name for NVIDIA graphics drivers, AMD Software / Adrenalin
+/// and Intel graphics drivers.
+pub fn gpu_driver_reason(name: &str, id: &str) -> Option<&'static str> {
+    let hay = format!("{name} {id}").to_ascii_lowercase();
+    let has = |needles: &[&str]| needles.iter().any(|n| hay.contains(n));
+    if hay.contains("nvidia")
+        && has(&[
+            "driver",
+            "geforce",
+            "graphics",
+            "display",
+            "nvidia app",
+            "nvidiaapp",
+            "game ready",
+        ])
+    {
+        return Some("NVIDIA graphics driver");
+    }
+    if has(&["adrenalin", "radeon"])
+        || (hay.contains("amd")
+            && has(&["graphics", "display driver", "amd software", "amdsoftware"]))
+    {
+        return Some("AMD graphics driver / Adrenalin");
+    }
+    if hay.contains("intel")
+        && has(&[
+            "graphics",
+            "uhd",
+            "iris",
+            "intel arc",
+            "arc control",
+            "display driver",
+            "driver & support",
+            "driver and support",
+            "driversupport",
+        ])
+    {
+        return Some("Intel graphics driver");
+    }
+    None
+}
+
+/// Result of an upgrade check.
+#[derive(Debug, Clone, Default)]
+pub struct UpgradeList {
+    /// Packages offered to the user.
+    pub items: Vec<WingetUpgrade>,
+    /// GPU driver packages that were left out, with the reason.
+    pub excluded: Vec<(WingetUpgrade, &'static str)>,
+    /// winget said nothing is available, or similar.
+    pub note: Option<String>,
+}
+
+/// Split parsed rows into offered packages and excluded GPU driver packages.
+pub fn split_upgrades(all: Vec<WingetUpgrade>) -> UpgradeList {
+    let mut list = UpgradeList::default();
+    for u in all {
+        match gpu_driver_reason(&u.name, &u.id) {
+            Some(why) => list.excluded.push((u, why)),
+            None => list.items.push(u),
+        }
+    }
+    list
+}
+
+fn is_separator(l: &str) -> bool {
+    let t = l.trim();
+    t.len() >= 5 && t.chars().all(|c| c == '-')
+}
+
+fn is_footer(l: &str) -> bool {
+    let t = l.trim().to_ascii_lowercase();
+    t.is_empty()
+        || t.starts_with("the following")
+        || t.starts_with("no installed package")
+        || t.starts_with("no applicable")
+        || (t.chars().next().is_some_and(|c| c.is_ascii_digit()) && t.contains("upgrade"))
+}
+
+/// Parse the table printed by `winget upgrade`, by column position like [`parse_winget_list`].
+/// Handles several tables (winget prints a second one for packages that need explicit
+/// targeting), spinner noise before the header, and the "N upgrades available." footer.
+pub fn parse_winget_upgrade(text: &str) -> Vec<WingetUpgrade> {
+    // winget redraws a spinner with carriage returns; only the last segment of a line counts.
+    let lines: Vec<&str> = text
+        .lines()
+        .map(|l| l.rsplit('\r').find(|s| !s.trim().is_empty()).unwrap_or(""))
+        .collect();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < lines.len() {
+        let h = lines[i];
+        let is_header = h.trim_start().starts_with("Name")
+            && h.contains("Id")
+            && h.contains("Version")
+            && h.contains("Available");
+        if !is_header {
+            i += 1;
+            continue;
+        }
+        let col = |label: &str| h.find(label).map(|b| h[..b].chars().count());
+        let (Some(id_c), Some(ver_c), Some(av_c)) = (col("Id"), col("Version"), col("Available"))
+        else {
+            i += 1;
+            continue;
+        };
+        let src_c = col("Source");
+        let slice = |l: &str, a: usize, b: Option<usize>| -> String {
+            let it = l.chars().skip(a);
+            match b {
+                Some(b) => it.take(b.saturating_sub(a)).collect::<String>(),
+                None => it.collect::<String>(),
+            }
+            .trim()
+            .to_string()
+        };
+        i += 1;
+        if i < lines.len() && is_separator(lines[i]) {
+            i += 1;
+        }
+        while i < lines.len() && !is_footer(lines[i]) {
+            let l = lines[i];
+            let u = WingetUpgrade {
+                name: slice(l, 0, Some(id_c)),
+                id: slice(l, id_c, Some(ver_c)),
+                version: slice(l, ver_c, Some(av_c)),
+                available: slice(l, av_c, src_c),
+                source: src_c.map(|s| slice(l, s, None)).unwrap_or_default(),
+            };
+            if !u.id.is_empty() && !u.available.is_empty() {
+                out.push(u);
+            }
+            i += 1;
+        }
+    }
+    out
+}
+
+/// Run `winget upgrade` (listing only) and parse it. Cancellable; call from a worker thread.
+pub fn list_upgrades(cancel: &AtomicBool) -> Result<UpgradeList> {
+    let (code, out) = run_hidden_cancellable(
+        "winget",
+        &[
+            "upgrade",
+            "--include-unknown",
+            "--disable-interactivity",
+            "--accept-source-agreements",
+        ],
+        cancel,
+    )?;
+    let rows = parse_winget_upgrade(&out);
+    if rows.is_empty() {
+        let lower = out.to_ascii_lowercase();
+        if code != 0 && !lower.contains("no installed package") && !lower.contains("no applicable")
+        {
+            let tail: String = out
+                .trim()
+                .chars()
+                .rev()
+                .take(300)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect();
+            return Err(CoreError::Message(format!(
+                "winget upgrade failed (exit code {code}). {tail}"
+            )));
+        }
+        return Ok(UpgradeList {
+            note: Some("winget reports that no application updates are available.".into()),
+            ..Default::default()
+        });
+    }
+    Ok(split_upgrades(rows))
+}
+
+/// Upgrade one package with `winget upgrade --id <id> --exact` through ShellExecute, so
+/// winget's own window and any UAC prompt are shown. Waits for it to finish and returns the
+/// exit code (`None` if Windows gave no process handle). No silent or force flags are passed.
+pub fn winget_upgrade(id: &str) -> Result<Option<u32>> {
+    validate_winget_id(id)?;
+    if let Some((_, why)) = gpu_driver_reason("", id).map(|w| ((), w)) {
+        return Err(CoreError::Blocked(format!(
+            "'{id}' is a {why} package; Rustacer never installs GPU drivers."
+        )));
+    }
+    info!("winget upgrade --id {id} --exact");
+    shell_execute_wait(
+        "open",
+        "winget",
+        Some(&format!("upgrade --id {id} --exact")),
     )
 }
 
@@ -341,5 +564,167 @@ mod tests {
     fn winget_id_validation() {
         assert!(winget_uninstall("bad id").is_err());
         assert!(winget_uninstall("").is_err());
+    }
+
+    const UPGRADE_SAMPLE: &str = "\r   - \r   \\ \r   | \r                              \r\n\
+Name                         Id                          Version   Available  Source\n\
+------------------------------------------------------------------------------------\n\
+Git                          Git.Git                     2.45.0    2.46.0     winget\n\
+Microsoft Visual Studio Code Microsoft.VisualStudioCode  1.90.0    1.91.1     winget\n\
+NVIDIA Graphics Driver 551   Nvidia.GraphicsDriver       551.23    552.44     winget\n\
+AMD Software: Adrenalin Edit AMD.AMDSoftwareAdrenalin    23.1.1    24.1.1     winget\n\
+Intel(R) Graphics Driver     Intel.IntelGraphicsDriver   31.0.101  31.0.102   winget\n\
+7-Zip                        7zip.7zip                   Unknown   24.07      winget\n\
+Some Store App               9NBLGGH4NNS1                1.0       1.1        msstore\n\
+7 upgrades available.\n\
+\n\
+The following packages have an upgrade available, but require explicit targeting for upgrade:\n\
+Name           Id                  Version  Available  Source\n\
+------------------------------------------------------------\n\
+Pinned Tool    Vendor.PinnedTool   1.0      2.0        winget\n\
+1 package(s) have pins that prevent upgrade.\n";
+
+    #[test]
+    fn parses_winget_upgrade_table() {
+        let v = parse_winget_upgrade(UPGRADE_SAMPLE);
+        let ids: Vec<&str> = v.iter().map(|u| u.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec![
+                "Git.Git",
+                "Microsoft.VisualStudioCode",
+                "Nvidia.GraphicsDriver",
+                "AMD.AMDSoftwareAdrenalin",
+                "Intel.IntelGraphicsDriver",
+                "7zip.7zip",
+                "9NBLGGH4NNS1",
+                "Vendor.PinnedTool"
+            ]
+        );
+        assert_eq!(v[0].name, "Git");
+        assert_eq!(v[0].version, "2.45.0");
+        assert_eq!(v[0].available, "2.46.0");
+        assert_eq!(v[0].source, "winget");
+        assert_eq!(v[1].name, "Microsoft Visual Studio Code");
+        assert_eq!(v[5].version, "Unknown");
+        assert_eq!(v[6].source, "msstore");
+        assert_eq!(v[7].name, "Pinned Tool");
+    }
+
+    #[test]
+    fn upgrade_parser_ignores_noise_and_empty_results() {
+        assert!(parse_winget_upgrade("").is_empty());
+        assert!(
+            parse_winget_upgrade("No installed package found matching input criteria.\n")
+                .is_empty()
+        );
+        assert!(parse_winget_upgrade("random\ntext\n").is_empty());
+        // A table with no rows.
+        let t = "Name  Id  Version  Available  Source\n---------------------------------\n0 upgrades available.\n";
+        assert!(parse_winget_upgrade(t).is_empty());
+        // Rows without an "Available" value are not upgrades.
+        let t = "Name   Id       Version  Available  Source\n---------------------------------------\nThing  A.Thing  1.0                 winget\n";
+        assert!(parse_winget_upgrade(t).is_empty());
+    }
+
+    #[test]
+    fn upgrade_parser_without_source_column() {
+        let t = "Name   Id       Version  Available\n------------------------------------\nThing  A.Thing  1.0      1.1\n";
+        let v = parse_winget_upgrade(t);
+        assert_eq!(v.len(), 1);
+        assert_eq!(v[0].available, "1.1");
+        assert_eq!(v[0].source, "");
+    }
+
+    #[test]
+    fn gpu_driver_packages_are_excluded() {
+        let l = split_upgrades(parse_winget_upgrade(UPGRADE_SAMPLE));
+        let kept: Vec<&str> = l.items.iter().map(|u| u.id.as_str()).collect();
+        assert_eq!(
+            kept,
+            vec![
+                "Git.Git",
+                "Microsoft.VisualStudioCode",
+                "7zip.7zip",
+                "9NBLGGH4NNS1",
+                "Vendor.PinnedTool"
+            ]
+        );
+        let out: Vec<&str> = l.excluded.iter().map(|(u, _)| u.id.as_str()).collect();
+        assert_eq!(
+            out,
+            vec![
+                "Nvidia.GraphicsDriver",
+                "AMD.AMDSoftwareAdrenalin",
+                "Intel.IntelGraphicsDriver"
+            ]
+        );
+        assert!(l.excluded[0].1.contains("NVIDIA"));
+        assert!(l.excluded[1].1.contains("AMD"));
+        assert!(l.excluded[2].1.contains("Intel"));
+    }
+
+    #[test]
+    fn gpu_rules_match_ids_and_names_but_not_unrelated_apps() {
+        for (n, i) in [
+            ("NVIDIA GeForce Experience", "Nvidia.GeForceExperience"),
+            ("NVIDIA app", "Nvidia.NvidiaApp"),
+            ("", "NVIDIA.GameReadyDriver"),
+            ("AMD Software: Adrenalin Edition", ""),
+            ("Radeon Software", "AMD.RadeonSoftware"),
+            ("Intel Arc Control", "Intel.ArcControl"),
+            (
+                "Intel Driver & Support Assistant",
+                "Intel.IntelDriverAndSupportAssistant",
+            ),
+            ("Intel UHD Graphics Driver", ""),
+        ] {
+            assert!(gpu_driver_reason(n, i).is_some(), "{n} / {i}");
+        }
+        for (n, i) in [
+            ("Git", "Git.Git"),
+            ("Intel Unite", "Intel.Unite"),
+            ("AMD Chipset Software", "AMD.Chipset"),
+            ("NVIDIA Broadcast Tool", "Nvidia.Broadcast"),
+            ("Microsoft Edge", "Microsoft.Edge"),
+            ("Radiant Player", "Radiant.Player"),
+        ] {
+            assert!(gpu_driver_reason(n, i).is_none(), "{n} / {i}");
+        }
+    }
+
+    #[test]
+    fn winget_ids_are_validated() {
+        for ok in [
+            "Git.Git",
+            "7zip.7zip",
+            "9NBLGGH4NNS1",
+            "Vendor.App-Name_2+",
+            r"ARP\User\X64\{GUID}",
+        ] {
+            assert!(validate_winget_id(ok).is_ok(), "{ok}");
+        }
+        for bad in [
+            "", "bad id", "a\"b", "-rf", "--force", "a&b", "a|b", "a>b", "a%PATH%", "a\tb", "a\nb",
+        ] {
+            assert!(validate_winget_id(bad).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn upgrade_refuses_bad_and_gpu_ids_before_running_anything() {
+        assert!(matches!(
+            winget_upgrade("bad id"),
+            Err(CoreError::Blocked(_))
+        ));
+        assert!(matches!(winget_upgrade(""), Err(CoreError::Blocked(_))));
+        assert!(matches!(
+            winget_upgrade("--silent"),
+            Err(CoreError::Blocked(_))
+        ));
+        assert!(matches!(
+            winget_upgrade("Nvidia.GraphicsDriver"),
+            Err(CoreError::Blocked(_))
+        ));
     }
 }

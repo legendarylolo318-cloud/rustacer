@@ -138,3 +138,34 @@ fn drive_health() {
     assert!(!r.drives.is_empty());
     assert!(r.drives.iter().all(|d| d.size > 0));
 }
+
+/// Lists pending winget upgrades (listing only, nothing is upgraded) and checks the GPU
+/// exclusion on real output.
+#[test]
+#[ignore]
+fn winget_upgrade_list() {
+    if !uninstaller::winget_available() {
+        println!("winget not installed; skipping");
+        return;
+    }
+    let cancel = AtomicBool::new(false);
+    let l = uninstaller::list_upgrades(&cancel).unwrap();
+    println!(
+        "{} upgrades offered, {} GPU packages left out",
+        l.items.len(),
+        l.excluded.len()
+    );
+    if let Some(n) = &l.note {
+        println!("note: {n}");
+    }
+    for u in &l.items {
+        println!(
+            "  {} | {} | {} -> {} | {}",
+            u.name, u.id, u.version, u.available, u.source
+        );
+        assert!(uninstaller::gpu_driver_reason(&u.name, &u.id).is_none());
+    }
+    for (u, why) in &l.excluded {
+        println!("  [left out: {why}] {} ({})", u.name, u.id);
+    }
+}

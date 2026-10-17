@@ -13,7 +13,7 @@ use rustacer_core::metrics::{self, Sampler, Snapshot, SystemInfo};
 use rustacer_core::processes::{ProcessInfo, ProcessMonitor};
 use rustacer_core::services::{self, Action as SvcAction, ServiceInfo};
 use rustacer_core::startup::{self, StartupEntry};
-use rustacer_core::uninstaller::{self, AppEntry, WingetApp};
+use rustacer_core::uninstaller::{self, AppEntry, UpgradeList, WingetApp, WingetUpgrade};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -96,6 +96,10 @@ pub enum Msg {
     DiskRecycled(Vec<PathBuf>),
     Boot(Result<Box<BootReport>, String>),
     Health(Result<Box<HealthReport>, String>),
+    Upgrades(Result<Box<UpgradeList>, String>),
+    UpgradeProgress(String),
+    /// (package id, outcome text) for every package that was attempted.
+    UpgradeDone(Vec<(String, String)>),
     Notice {
         error: bool,
         text: String,
@@ -146,6 +150,7 @@ pub enum Act {
     KillTree(u32, String),
     Uninstall(AppEntry, bool),
     WingetUninstall(WingetApp),
+    WingetUpgrade(Vec<WingetUpgrade>),
     InstallDrivers(Vec<DriverUpdate>),
     RebootNow,
     BackupDrivers(PathBuf),
@@ -300,8 +305,31 @@ pub struct ProcState {
     pub sort_desc: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum UninstTab {
+    #[default]
+    Apps,
+    Updates,
+}
+
+#[derive(Default)]
+pub struct UpdatesState {
+    pub items: Vec<(WingetUpgrade, bool)>,
+    pub excluded: Vec<(WingetUpgrade, &'static str)>,
+    pub note: Option<String>,
+    pub error: Option<String>,
+    pub checking: bool,
+    pub checked: bool,
+    pub running: bool,
+    pub progress: String,
+    pub cancel: Arc<AtomicBool>,
+    pub results: Vec<(String, String)>,
+}
+
 #[derive(Default)]
 pub struct UninstState {
+    pub tab: UninstTab,
+    pub updates: UpdatesState,
     pub list: Vec<AppEntry>,
     pub loading: bool,
     pub loaded: bool,
@@ -357,6 +385,7 @@ pub enum Sub {
     None,
     Driver(DriverTab),
     Startup(StartupTab),
+    Uninstall(UninstTab),
 }
 
 const SMOKE_STEPS: &[(Page, Sub)] = &[
@@ -373,7 +402,8 @@ const SMOKE_STEPS: &[(Page, Sub)] = &[
     (Page::Drivers, Sub::Driver(DriverTab::RestorePoints)),
     (Page::Services, Sub::None),
     (Page::Processes, Sub::None),
-    (Page::Uninstaller, Sub::None),
+    (Page::Uninstaller, Sub::Uninstall(UninstTab::Apps)),
+    (Page::Uninstaller, Sub::Uninstall(UninstTab::Updates)),
     (Page::Resources, Sub::None),
     (Page::Settings, Sub::None),
 ];
@@ -656,6 +686,34 @@ impl App {
                         Err(e) => self.health.error = Some(e),
                     }
                 }
+                Msg::Upgrades(r) => {
+                    let u = &mut self.uninst.updates;
+                    u.checking = false;
+                    u.checked = true;
+                    match r {
+                        Ok(l) => {
+                            u.error = None;
+                            u.note = l.note;
+                            u.excluded = l.excluded;
+                            u.items = l.items.into_iter().map(|i| (i, false)).collect();
+                        }
+                        Err(e) => u.error = Some(e),
+                    }
+                }
+                Msg::UpgradeProgress(p) => self.uninst.updates.progress = p,
+                Msg::UpgradeDone(results) => {
+                    let u = &mut self.uninst.updates;
+                    u.running = false;
+                    u.progress.clear();
+                    // Packages that went through are no longer pending.
+                    let done: Vec<&str> = results
+                        .iter()
+                        .filter(|(_, r)| r.starts_with("Finished"))
+                        .map(|(id, _)| id.as_str())
+                        .collect();
+                    u.items.retain(|(i, _)| !done.contains(&i.id.as_str()));
+                    u.results = results;
+                }
                 Msg::Boot(r) => {
                     self.startup.boot.loading = false;
                     self.startup.boot.loaded = true;
@@ -770,6 +828,7 @@ impl App {
             Sub::None => {}
             Sub::Driver(t) => self.drivers.tab = t,
             Sub::Startup(t) => self.startup.tab = t,
+            Sub::Uninstall(t) => self.uninst.tab = t,
         }
     }
 
@@ -868,6 +927,23 @@ impl App {
                     .map(Box::new)
                     .map_err(|e| e.to_string()),
             ));
+        });
+    }
+
+    /// `winget upgrade` listing on a worker thread (read-only, cancellable).
+    pub fn check_upgrades(&mut self) {
+        let u = &mut self.uninst.updates;
+        if u.checking || u.running {
+            return;
+        }
+        u.checking = true;
+        u.error = None;
+        u.results.clear();
+        u.cancel.store(false, Ordering::Relaxed);
+        let cancel = u.cancel.clone();
+        self.spawn(move |bus| {
+            let r = uninstaller::list_upgrades(&cancel);
+            bus.send(Msg::Upgrades(r.map(Box::new).map_err(|e| e.to_string())));
         });
     }
 
@@ -974,6 +1050,39 @@ impl App {
                     Ok(()) => bus.ok(format!("winget uninstall for '{}' launched.", w.name)),
                     Err(e) => bus.err(e.to_string()),
                 })
+            }
+            Act::WingetUpgrade(list) => {
+                let u = &mut self.uninst.updates;
+                u.running = true;
+                u.results.clear();
+                u.cancel.store(false, Ordering::Relaxed);
+                let cancel = u.cancel.clone();
+                self.spawn(move |bus| {
+                    let mut results = Vec::new();
+                    let n = list.len();
+                    for (i, pkg) in list.iter().enumerate() {
+                        if cancel.load(Ordering::Relaxed) {
+                            results.push((pkg.id.clone(), "Skipped (cancelled)".to_string()));
+                            continue;
+                        }
+                        bus.send(Msg::UpgradeProgress(format!(
+                            "Upgrading {} of {n}: {} - follow winget's own window",
+                            i + 1,
+                            pkg.name
+                        )));
+                        info!("user confirmed winget upgrade of {}", pkg.id);
+                        let outcome = match uninstaller::winget_upgrade(&pkg.id) {
+                            Ok(Some(0)) => "Finished".to_string(),
+                            Ok(Some(code)) => {
+                                format!("winget ended with exit code {code} (0x{code:08X})")
+                            }
+                            Ok(None) => "Started (Windows gave no result code)".to_string(),
+                            Err(e) => format!("Not run: {e}"),
+                        };
+                        results.push((pkg.id.clone(), outcome));
+                    }
+                    bus.send(Msg::UpgradeDone(results));
+                });
             }
             Act::RebootNow => self.spawn(|bus| match wua::reboot_now() {
                 Ok(()) => bus.ok("Restarting in 10 seconds. Run 'shutdown /a' to abort."),

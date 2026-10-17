@@ -5,7 +5,7 @@
 //! * `--resize-test <dir>`: drives the window through small, large, maximized and
 //!   fullscreen states and captures pages in each, to catch layout bugs.
 
-use crate::app::{App, DriverTab, Page, StartupTab, Sub};
+use crate::app::{App, DriverTab, Page, StartupTab, Sub, UninstTab};
 use eframe::egui::{self, Context};
 use rustacer_core::config::Theme;
 use std::path::{Path, PathBuf};
@@ -184,11 +184,18 @@ fn resize_tour() -> Vec<Step> {
     big.dwell = Duration::from_millis(2500);
     v.push(big);
     // Tabs inside pages.
-    let tabs: Vec<(&'static str, Page, Sub)> = vec![(
-        "tab-startup-boot",
-        Page::Startup,
-        Sub::Startup(StartupTab::Boot),
-    )];
+    let tabs: Vec<(&'static str, Page, Sub)> = vec![
+        (
+            "tab-startup-boot",
+            Page::Startup,
+            Sub::Startup(StartupTab::Boot),
+        ),
+        (
+            "tab-uninstaller-updates",
+            Page::Uninstaller,
+            Sub::Uninstall(UninstTab::Updates),
+        ),
+    ];
     for (name, page, sub) in tabs {
         let mut st = step(name, page, None, Prep::None, Theme::Dark);
         st.sub = sub;

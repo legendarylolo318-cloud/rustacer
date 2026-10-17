@@ -2190,7 +2190,33 @@ fn processes(app: &mut App, ui: &mut Ui) {
 // ---------------- uninstaller ----------------
 
 fn uninstaller(app: &mut App, ui: &mut Ui) {
-    heading(ui, "Uninstaller");
+    heading(ui, tr(Lang::English, "nav.uninstaller"));
+    if !app.uninst.winget_probed {
+        app.uninst.winget_probed = true;
+        app.spawn(|bus| {
+            bus.send(Msg::WingetAvailable(
+                rustacer_core::uninstaller::winget_available(),
+            ))
+        });
+    }
+    ui.horizontal(|ui| {
+        for (t, key) in [
+            (UninstTab::Apps, "uninstall.apps"),
+            (UninstTab::Updates, "uninstall.updates"),
+        ] {
+            if ui
+                .selectable_label(app.uninst.tab == t, tr(Lang::English, key))
+                .clicked()
+            {
+                app.uninst.tab = t;
+            }
+        }
+    });
+    ui.separator();
+    if app.uninst.tab == UninstTab::Updates {
+        app_updates(app, ui);
+        return;
+    }
     ui.horizontal(|ui| {
         search_box(ui, &mut app.uninst.filter);
         ui.checkbox(
@@ -2204,14 +2230,6 @@ fn uninstaller(app: &mut App, ui: &mut Ui) {
             ui.spinner();
         }
     });
-    if !app.uninst.winget_probed {
-        app.uninst.winget_probed = true;
-        app.spawn(|bus| {
-            bus.send(Msg::WingetAvailable(
-                rustacer_core::uninstaller::winget_available(),
-            ))
-        });
-    }
     if app.uninst.winget_ok == Some(true) {
         let mut want = app.uninst.show_winget;
         if ui
@@ -2335,6 +2353,214 @@ fn uninstaller(app: &mut App, ui: &mut Ui) {
 }
 
 type AppEntryOwned = rustacer_core::uninstaller::AppEntry;
+
+fn app_updates(app: &mut App, ui: &mut Ui) {
+    ui.label(
+        RichText::new(
+            "Uses winget. Nothing is installed until you tick packages and confirm; winget then shows its own window and any UAC prompt.",
+        )
+        .weak(),
+    );
+    match app.uninst.winget_ok {
+        None => {
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.label("Looking for winget...");
+            });
+            return;
+        }
+        Some(false) => {
+            ui.label("winget (Windows Package Manager) was not found, so app updates are not available. It comes with the App Installer package from the Microsoft Store.");
+            return;
+        }
+        Some(true) => {}
+    }
+    let mut check = false;
+    let mut go: Option<Vec<rustacer_core::uninstaller::WingetUpgrade>> = None;
+    ui.horizontal_wrapped(|ui| {
+        let busy = app.uninst.updates.checking || app.uninst.updates.running;
+        if ui
+            .add_enabled(!busy, primary_btn(ui, tr(Lang::English, "updates.check")))
+            .clicked()
+        {
+            check = true;
+        }
+        if busy {
+            ui.spinner();
+        }
+        if app.uninst.updates.checking && ui.button(tr(Lang::English, "common.cancel")).clicked() {
+            app.uninst
+                .updates
+                .cancel
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        if app.uninst.updates.running && ui.button("Cancel remaining").clicked() {
+            app.uninst
+                .updates
+                .cancel
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+    });
+    if check {
+        app.check_upgrades();
+    }
+    let u = &mut app.uninst.updates;
+    if u.checking {
+        ui.label("Running winget upgrade (read-only)...");
+    }
+    if u.running {
+        ui.label(&u.progress);
+    }
+    if let Some(e) = &u.error {
+        ui.colored_label(Color32::from_rgb(0xe5, 0x48, 0x4d), e);
+    }
+    if let Some(n) = &u.note {
+        ui.label(n);
+    }
+    if !u.excluded.is_empty() {
+        let list: Vec<String> = u
+            .excluded
+            .iter()
+            .map(|(p, why)| format!("{} ({}) - {why}", p.name, p.id))
+            .collect();
+        ui.label(
+            RichText::new(format!(
+                "{} GPU driver package(s) left out: Rustacer never installs graphics drivers. Use the official vendor page in Driver Updater > GPU.",
+                list.len()
+            ))
+            .color(ui.visuals().warn_fg_color),
+        )
+        .on_hover_text(list.join("\n"));
+    }
+    if !u.results.is_empty() {
+        ui.separator();
+        ui.label(RichText::new("Results").strong());
+        for (id, r) in &u.results {
+            let ok = r.starts_with("Finished");
+            ui.colored_label(
+                if ok {
+                    Color32::from_rgb(0x3d, 0xb8, 0x6b)
+                } else {
+                    Color32::from_rgb(0xf5, 0xa6, 0x23)
+                },
+                format!("{id}: {r}"),
+            );
+        }
+        ui.separator();
+    }
+    if u.items.is_empty() {
+        if u.checked && !u.checking && u.note.is_none() && u.error.is_none() {
+            ui.label("Everything winget manages is up to date (apart from GPU drivers).");
+        } else if !u.checked && !u.checking {
+            ui.label("Press \"Check for updates\" to list apps with newer versions.");
+        }
+        return;
+    }
+    use rustacer_core::uninstaller::validate_winget_id;
+    let n_sel = u.items.iter().filter(|(_, c)| *c).count();
+    ui.horizontal_wrapped(|ui| {
+        if ui.button("Select all").clicked() {
+            for (p, c) in u.items.iter_mut() {
+                *c = validate_winget_id(&p.id).is_ok();
+            }
+        }
+        if ui.button("Select none").clicked() {
+            u.items.iter_mut().for_each(|(_, c)| *c = false);
+        }
+        if ui
+            .add_enabled(
+                n_sel > 0 && !u.running && !u.checking,
+                primary_btn(
+                    ui,
+                    format!("{} ({n_sel})", tr(Lang::English, "updates.upgrade")),
+                ),
+            )
+            .clicked()
+        {
+            go = Some(
+                u.items
+                    .iter()
+                    .filter(|(_, c)| *c)
+                    .map(|(p, _)| p.clone())
+                    .collect(),
+            );
+        }
+        ui.label(RichText::new(format!("{} updates available", u.items.len())).weak());
+    });
+    let (k, salt) = table_layout(ui);
+    TableBuilder::new(ui)
+        .id_salt(salt)
+        .striped(true)
+        .resizable(true)
+        .column(Column::exact(30.0))
+        .column(Column::initial(k * 260.0).clip(true))
+        .column(Column::initial(k * 230.0).clip(true))
+        .column(Column::initial(k * 100.0).clip(true))
+        .column(Column::initial(k * 100.0).clip(true))
+        .column(
+            Column::remainder()
+                .resizable(false)
+                .at_least(60.0)
+                .clip(true),
+        )
+        .header(ROW_H, |mut h| {
+            for t in ["", "Name", "Id", "Current", "Available", "Source"] {
+                h.col(|ui| {
+                    ui.strong(t);
+                });
+            }
+        })
+        .body(|body| {
+            let n = u.items.len();
+            body.rows(ROW_H, n, |mut row| {
+                let (p, c) = &mut u.items[row.index()];
+                let usable = validate_winget_id(&p.id).is_ok();
+                row.col(|ui| {
+                    let r = ui.add_enabled(usable, egui::Checkbox::new(c, ""));
+                    r.widget_info(|| {
+                        egui::WidgetInfo::labeled(
+                            egui::WidgetType::Checkbox,
+                            usable,
+                            format!("Upgrade {}", p.name),
+                        )
+                    });
+                    if !usable {
+                        *c = false;
+                    }
+                });
+                row.col(|ui| {
+                    ui.label(&p.name);
+                });
+                row.col(|ui| {
+                    ui.label(&p.id);
+                });
+                row.col(|ui| {
+                    ui.label(&p.version);
+                });
+                row.col(|ui| {
+                    ui.label(&p.available);
+                });
+                row.col(|ui| {
+                    ui.label(&p.source);
+                });
+            });
+        });
+    if let Some(list) = go {
+        let lines: Vec<String> = list
+            .iter()
+            .map(|p| format!("- {} ({}): {} -> {}", p.name, p.id, p.version, p.available))
+            .collect();
+        app.ask(
+            "Upgrade applications",
+            format!(
+                "Run 'winget upgrade --id <id> --exact' for each of these, one at a time:\n{}\n\nwinget opens its own window and Windows may ask for permission (UAC). Rustacer adds no silent or force options.",
+                lines.join("\n")
+            ),
+            Some("Updating an app that is running may close it. Save your work first.".into()),
+            Act::WingetUpgrade(list),
+        );
+    }
+}
 
 fn winget_table(app: &mut App, ui: &mut Ui) {
     let f = app.uninst.filter.to_lowercase();
