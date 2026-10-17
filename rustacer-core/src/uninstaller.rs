@@ -325,12 +325,43 @@ pub struct UpgradeList {
 pub fn split_upgrades(all: Vec<WingetUpgrade>) -> UpgradeList {
     let mut list = UpgradeList::default();
     for u in all {
-        match gpu_driver_reason(&u.name, &u.id) {
+        match gpu_driver_reason(&u.name, &u.id).or_else(|| self_updating_reason(&u.id)) {
             Some(why) => list.excluded.push((u, why)),
             None => list.items.push(u),
         }
     }
     list
+}
+
+/// Why a package is left out because it updates itself and winget can never upgrade the
+/// installed copy (winget reports 0x8A15008E, "different install technology").
+pub const SELF_UPDATING: &str =
+    "updates itself through Microsoft Edge Update, which winget cannot replace";
+
+/// Reason given to a package that failed with "different install technology" this session.
+pub const TECHNOLOGY_MISMATCH: &str =
+    "was installed another way than winget's package, so winget cannot upgrade it; update it from the app itself";
+
+/// winget's exit code for "an upgrade is available but uses a different install technology".
+pub const EXIT_TECHNOLOGY_MISMATCH: u32 = 0x8A15_008E;
+
+/// Packages that always fail through winget because they update themselves.
+pub fn self_updating_reason(id: &str) -> Option<&'static str> {
+    const IDS: [&str; 5] = [
+        "Microsoft.Edge",
+        "Microsoft.Edge.Beta",
+        "Microsoft.Edge.Dev",
+        "Microsoft.Edge.Canary",
+        "Microsoft.EdgeWebView2Runtime",
+    ];
+    IDS.iter()
+        .any(|x| x.eq_ignore_ascii_case(id.trim()))
+        .then_some(SELF_UPDATING)
+}
+
+/// Is this a GPU driver exclusion (as opposed to a self-updating app)?
+pub fn is_gpu_exclusion(u: &WingetUpgrade) -> bool {
+    gpu_driver_reason(&u.name, &u.id).is_some()
 }
 
 fn is_separator(l: &str) -> bool {
@@ -789,6 +820,30 @@ Pinned Tool    Vendor.PinnedTool   1.0      2.0        winget\n\
         ] {
             assert!(validate_winget_id(bad).is_err(), "{bad:?}");
         }
+    }
+
+    #[test]
+    fn self_updating_apps_are_left_out_with_a_reason() {
+        let mk = |name: &str, id: &str| WingetUpgrade {
+            name: name.into(),
+            id: id.into(),
+            version: "1".into(),
+            available: "2".into(),
+            source: "winget".into(),
+        };
+        let l = split_upgrades(vec![
+            mk("Microsoft Edge", "Microsoft.Edge"),
+            mk("WebView2", "Microsoft.EdgeWebView2Runtime"),
+            mk("Edge Tool", "Vendor.EdgeTool"),
+            mk("NVIDIA app", "Nvidia.NvidiaApp"),
+            mk("Git", "Git.Git"),
+        ]);
+        let kept: Vec<&str> = l.items.iter().map(|u| u.id.as_str()).collect();
+        assert_eq!(kept, vec!["Vendor.EdgeTool", "Git.Git"]);
+        assert_eq!(l.excluded.len(), 3);
+        assert_eq!(l.excluded[0].1, SELF_UPDATING);
+        assert!(!is_gpu_exclusion(&l.excluded[0].0));
+        assert!(is_gpu_exclusion(&l.excluded[2].0));
     }
 
     #[test]

@@ -108,8 +108,8 @@ pub enum Msg {
     ReportDone(Result<PathBuf, String>),
     Upgrades(Result<Box<UpgradeList>, String>),
     UpgradeProgress(String),
-    /// (package id, outcome text) for every package that was attempted.
-    UpgradeDone(Vec<(String, String)>),
+    /// (package id, outcome text, winget exit code) for every package that was attempted.
+    UpgradeDone(Vec<(String, String, Option<u32>)>),
     Notice {
         error: bool,
         text: String,
@@ -1100,11 +1100,27 @@ impl App {
                     // Packages that went through are no longer pending.
                     let done: Vec<&str> = results
                         .iter()
-                        .filter(|(_, r)| r.starts_with("Finished"))
-                        .map(|(id, _)| id.as_str())
+                        .filter(|(_, r, _)| r.starts_with("Finished"))
+                        .map(|(id, _, _)| id.as_str())
                         .collect();
                     u.items.retain(|(i, _)| !done.contains(&i.id.as_str()));
-                    u.results = results;
+                    // winget can never upgrade these installs: move them to the left-out list
+                    // so they are not offered again.
+                    let stuck: Vec<&str> = results
+                        .iter()
+                        .filter(|(_, _, c)| *c == Some(uninstaller::EXIT_TECHNOLOGY_MISMATCH))
+                        .map(|(id, _, _)| id.as_str())
+                        .collect();
+                    let (moved, kept): (Vec<_>, Vec<_>) = std::mem::take(&mut u.items)
+                        .into_iter()
+                        .partition(|(i, _)| stuck.contains(&i.id.as_str()));
+                    u.items = kept;
+                    u.excluded.extend(
+                        moved
+                            .into_iter()
+                            .map(|(i, _)| (i, uninstaller::TECHNOLOGY_MISMATCH)),
+                    );
+                    u.results = results.into_iter().map(|(id, r, _)| (id, r)).collect();
                 }
                 Msg::Boot(r) => {
                     self.startup.boot.loading = false;
@@ -1620,7 +1636,7 @@ impl App {
                     let n = list.len();
                     for (i, pkg) in list.iter().enumerate() {
                         if cancel.load(Ordering::Relaxed) {
-                            results.push((pkg.id.clone(), "Skipped (cancelled)".to_string()));
+                            results.push((pkg.id.clone(), "Skipped (cancelled)".to_string(), None));
                             continue;
                         }
                         bus.send(Msg::UpgradeProgress(format!(
@@ -1630,13 +1646,15 @@ impl App {
                         )));
                         info!("user confirmed winget upgrade of {}", pkg.id);
                         let unknown = uninstaller::version_unknown(&pkg.version);
-                        let outcome = match uninstaller::winget_upgrade(&pkg.id, unknown) {
+                        let r = uninstaller::winget_upgrade(&pkg.id, unknown);
+                        let code = r.as_ref().ok().copied().flatten();
+                        let outcome = match r {
                             Ok(Some(0)) => "Finished".to_string(),
                             Ok(Some(code)) => uninstaller::explain_exit_code(code),
                             Ok(None) => "Started (Windows gave no result code)".to_string(),
                             Err(e) => format!("Not run: {e}"),
                         };
-                        results.push((pkg.id.clone(), outcome));
+                        results.push((pkg.id.clone(), outcome, code));
                     }
                     bus.send(Msg::UpgradeDone(results));
                 });

@@ -2687,20 +2687,41 @@ fn app_updates(app: &mut App, ui: &mut Ui, ctx: &Context) {
     if let Some(n) = &u.note {
         ui.label(n);
     }
-    if !u.excluded.is_empty() {
-        let list: Vec<String> = u
-            .excluded
+    use rustacer_core::uninstaller::is_gpu_exclusion;
+    let describe = |gpu: bool| -> Vec<String> {
+        u.excluded
             .iter()
+            .filter(|(p, _)| is_gpu_exclusion(p) == gpu)
             .map(|(p, why)| format!("{} ({}) - {why}", p.name, p.id))
-            .collect();
+            .collect()
+    };
+    let gpu = describe(true);
+    if !gpu.is_empty() {
         ui.label(
             RichText::new(format!(
                 "{} GPU driver package(s) left out: Rustacer never installs graphics drivers. Use the official vendor page in Driver Updater > GPU.",
-                list.len()
+                gpu.len()
             ))
             .color(ui.visuals().warn_fg_color),
         )
-        .on_hover_text(list.join("\n"));
+        .on_hover_text(gpu.join("\n"));
+    }
+    let other = describe(false);
+    if !other.is_empty() {
+        let names: Vec<&str> = u
+            .excluded
+            .iter()
+            .filter(|(p, _)| !is_gpu_exclusion(p))
+            .map(|(p, _)| p.name.as_str())
+            .collect();
+        ui.label(
+            RichText::new(format!(
+                "Left out because winget cannot update them (they update themselves): {}.",
+                names.join(", ")
+            ))
+            .weak(),
+        )
+        .on_hover_text(other.join("\n"));
     }
     if !u.results.is_empty() {
         ui.separator();

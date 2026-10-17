@@ -100,6 +100,7 @@ The Health page uses `MSFT_PhysicalDisk` (health status, media type, bus type) f
 - **App updates need administrator rights.** Without them the tab only offers **Restart as admin**, so winget does not have to ask for permission separately for every package.
 - **Nothing is installed until you tick packages and confirm.** Each ticked package then runs `winget upgrade --id <id> --exact` through ShellExecute, one at a time, in winget's own window. Rustacer adds no silent or force flags.
 - Packages whose installed version winget cannot read ("Unknown") are upgraded with `--include-unknown`, which winget needs for them; it is not a silent or force flag.
+- **Self-updating apps are left out** too: Microsoft Edge (all channels) and Edge WebView2 update themselves through Microsoft Edge Update, which winget cannot replace, so they are listed as left out with that reason. Any other app that fails with winget's "different install technology" error is moved to the same list for the rest of the session.
 - When winget fails, the result shows winget's own description of the error code (from `winget error`), for example that Edge updates itself and cannot be upgraded by winget.
 - App Installer (winget itself) is always updated last, and winget is started through its stable `WindowsApps\winget.exe` alias, so updating winget cannot break the packages after it.
 - Package ids are validated before they are passed on.

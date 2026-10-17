@@ -153,7 +153,7 @@ fn winget_upgrade_list() {
     let cancel = AtomicBool::new(false);
     let l = uninstaller::list_upgrades(&cancel).unwrap();
     println!(
-        "{} upgrades offered, {} GPU packages left out",
+        "{} upgrades offered, {} left out (GPU drivers and self-updating apps)",
         l.items.len(),
         l.excluded.len()
     );
