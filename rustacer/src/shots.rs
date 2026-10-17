@@ -17,8 +17,10 @@ enum Prep {
     None,
     ScanCleaner,
     ScanDrivers,
-    /// Scan the folder holding this executable (read-only, nothing personal in it).
+    /// Scan the folder holding this executable, or System32 for the README images (read-only).
     ScanDisk,
+    /// Show only Windows service host sockets on the Network tab (no personal apps).
+    NetListen,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -95,6 +97,19 @@ fn readme_tour() -> Vec<Step> {
             Prep::ScanDisk,
             Theme::Dark,
         ),
+        step("health", Page::Health, None, Prep::None, Theme::Dark),
+        {
+            // svchost only: no personal apps or browsing in the image.
+            let mut s = step(
+                "network",
+                Page::Processes,
+                None,
+                Prep::NetListen,
+                Theme::Dark,
+            );
+            s.sub = Sub::Procs(ProcTab::Network);
+            s
+        },
         step("services", Page::Services, None, Prep::None, Theme::Dark),
         step("settings", Page::Settings, None, Prep::None, Theme::Dark),
         step(
@@ -303,6 +318,7 @@ fn prep_done(app: &App, prep: Prep) -> bool {
         Prep::ScanCleaner => !app.cleaner.scanning,
         Prep::ScanDrivers => app.drivers.scanned_once && !app.drivers.scanning,
         Prep::ScanDisk => app.disk.report.is_some() && !app.disk.scanning,
+        Prep::NetListen => app.procs.net.loaded,
     }
 }
 
@@ -341,6 +357,7 @@ pub fn tick(app: &mut App, ctx: &Context) {
             apply_window(ctx, w);
         }
         app.cfg.theme = st.theme; // session only, never saved
+        app.notice = None; // a notice from an earlier step would clutter the image
         app.cfg.ui_scale = st.scale;
         app.goto(st.page);
         if let Some(t) = st.tab {
@@ -351,14 +368,21 @@ pub fn tick(app: &mut App, ctx: &Context) {
             Prep::None => {}
             Prep::ScanCleaner => app.scan_cleaner(),
             Prep::ScanDisk => {
-                if let Some(dir) = std::env::current_exe()
-                    .ok()
-                    .and_then(|p| p.parent().map(|d| d.to_path_buf()))
-                {
+                // README images scan a system folder, so no user name or personal file shows.
+                let dir = if app.redact {
+                    std::env::var_os("SystemRoot")
+                        .map(|w| std::path::PathBuf::from(w).join("System32"))
+                } else {
+                    std::env::current_exe()
+                        .ok()
+                        .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+                };
+                if let Some(dir) = dir {
                     app.disk.root = dir.to_string_lossy().into_owned();
                     app.scan_disk();
                 }
             }
+            Prep::NetListen => app.procs.net.filter = "svchost".into(),
             Prep::ScanDrivers => {
                 app.drivers.show_all_updates = true;
                 app.scan_driver_updates();
@@ -418,6 +442,7 @@ pub fn tick(app: &mut App, ctx: &Context) {
     let waited = t0.elapsed();
     let ready = waited >= st.dwell && prep_done(app, st.prep);
     if ready || waited >= Duration::from_secs(150) {
+        app.notice = None;
         ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(egui::UserData::default()));
         s.requested = true;
     }
