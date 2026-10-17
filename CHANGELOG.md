@@ -3,6 +3,16 @@
 All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+- Dashboard **Quick actions**: scan for junk, check app updates, scan for driver updates, analyze the Windows drive, export a report. They only start read-only scans or open a dialog.
+- Dashboard **Startup**: enabled startup apps, and (admin) the last boot time against the average and the app that slowed boot most.
+- Dashboard **Network**: active adapter, Wi-Fi or Ethernet, link speed, local address and open connections.
+
+### Fixed
+- The caption under each dashboard gauge was clipped at large UI scales.
+
 ## [0.3.3] - 2026-10-17
 
 ### Changed

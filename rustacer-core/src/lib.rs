@@ -10,6 +10,7 @@ pub mod drivers;
 pub mod error;
 pub mod metrics;
 pub mod netconn;
+pub mod netinfo;
 pub mod processes;
 pub mod report;
 pub mod services;

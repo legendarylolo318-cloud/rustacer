@@ -199,8 +199,9 @@ fn resize_tour() -> Vec<Step> {
     big.dwell = Duration::from_millis(2500);
     v.push(big);
     // The newer pages and tabs at 150% in the smallest window, and in high contrast.
-    let newer: [(&str, Page, Sub, Prep); 6] = [
+    let newer: [(&str, Page, Sub, Prep); 7] = [
         ("disk", Page::DiskAnalyzer, Sub::None, Prep::ScanDisk),
+        ("dashboard", Page::Dashboard, Sub::None, Prep::None),
         ("health", Page::Health, Sub::None, Prep::None),
         (
             "boot",

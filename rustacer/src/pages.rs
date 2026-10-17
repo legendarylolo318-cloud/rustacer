@@ -116,17 +116,217 @@ fn search_box(ui: &mut Ui, text: &mut String) {
 
 // ---------------- dashboard ----------------
 
+/// Quick actions only start scans or open a dialog; anything that changes the system still
+/// asks for confirmation on its own page.
+fn quick_actions(app: &mut App, ui: &mut Ui) {
+    let t = |k| tr(Lang::English, k);
+    ui.horizontal_wrapped(|ui| {
+        ui.label(RichText::new(t("dash.quick")).strong());
+        if ui
+            .add_enabled(
+                !app.cleaner.scanning && !app.cleaner.cleaning,
+                egui::Button::new(t("dash.junk")),
+            )
+            .on_hover_text("Scans the cleaner categories (read-only) and opens System Cleaner.")
+            .clicked()
+        {
+            app.goto(Page::Cleaner);
+            app.scan_cleaner();
+        }
+        let r = ui
+            .add_enabled(
+                !app.uninst.updates.checking && !app.uninst.updates.running,
+                egui::Button::new(t("dash.apps")),
+            )
+            .on_hover_text(if app.elevated {
+                "Lists winget updates (nothing is installed) and opens App Updates."
+            } else {
+                "Opens App Updates, which needs administrator rights."
+            });
+        if r.clicked() {
+            app.goto(Page::AppUpdates);
+            if app.elevated {
+                app.check_upgrades();
+            }
+        }
+        if ui
+            .add_enabled(
+                !app.drivers.scanning && !app.drivers.installing,
+                egui::Button::new(t("dash.drivers")),
+            )
+            .on_hover_text("Searches Windows Update for driver updates (nothing is installed).")
+            .clicked()
+        {
+            app.goto(Page::Drivers);
+            app.drivers.tab = DriverTab::Updates;
+            app.scan_driver_updates();
+        }
+        if ui
+            .add_enabled(!app.disk.scanning, egui::Button::new(t("dash.disk")))
+            .on_hover_text(
+                "Scans the Windows drive in the Disk Analyzer (read-only, can be cancelled).",
+            )
+            .clicked()
+        {
+            let drive = std::env::var("SystemDrive").unwrap_or_else(|_| "C:".into());
+            app.goto(Page::DiskAnalyzer);
+            app.disk.root = format!("{}\\", drive.trim_end_matches('\\'));
+            app.scan_disk();
+        }
+        if ui
+            .add_enabled(
+                !app.report.running,
+                egui::Button::new(tr(Lang::English, "report.export")),
+            )
+            .clicked()
+        {
+            app.open_report_dialog();
+        }
+    });
+}
+
+/// Startup impact and network at a glance.
+fn dashboard_glance(app: &mut App, ui: &mut Ui) {
+    let mut go: Option<(Page, Option<ProcTab>)> = None;
+    ui.heading(tr(Lang::English, "dash.startup"));
+    egui::Grid::new("dash-startup")
+        .num_columns(2)
+        .spacing([24.0, 6.0])
+        .show(ui, |ui| {
+            ui.label(RichText::new("Startup apps").strong());
+            ui.horizontal_wrapped(|ui| {
+                if app.startup.loaded {
+                    let total = app.startup.entries.len();
+                    let on = app.startup.entries.iter().filter(|e| e.enabled).count();
+                    ui.label(format!("{on} enabled of {total}"));
+                } else {
+                    ui.label(RichText::new("reading...").weak());
+                }
+                if ui.link("Manage").clicked() {
+                    go = Some((Page::Startup, None));
+                }
+            });
+            ui.end_row();
+            let boot = &app.startup.boot;
+            ui.label(RichText::new("Last boot").strong());
+            if !app.elevated {
+                ui.label(RichText::new("needs administrator rights").weak());
+            } else if let Some((last, avg, _, _)) = boot.report.as_ref().and_then(|r| r.summary()) {
+                let slow = boot
+                    .report
+                    .as_ref()
+                    .and_then(|r| r.boots.last())
+                    .is_some_and(|b| b.degraded);
+                ui.label(format!(
+                    "{} (average {}){}",
+                    format_ms(last),
+                    format_ms(avg),
+                    if slow { ", slower than usual" } else { "" }
+                ));
+            } else if boot.loading || !boot.loaded {
+                ui.label(RichText::new("reading...").weak());
+            } else {
+                ui.label(RichText::new("no boot events recorded").weak());
+            }
+            ui.end_row();
+            if app.elevated {
+                ui.label(RichText::new("Slowed boot most").strong());
+                match boot.report.as_ref().and_then(|r| r.slow_apps.first()) {
+                    Some(a) => {
+                        let name = if a.friendly_name.is_empty() {
+                            &a.name
+                        } else {
+                            &a.friendly_name
+                        };
+                        ui.label(format!(
+                            "{name} added {} at its last recorded boot",
+                            format_ms(a.latest_degradation_ms)
+                        ));
+                    }
+                    None if boot.loaded => {
+                        ui.label(RichText::new("no app has slowed boot").weak());
+                    }
+                    None => {
+                        ui.label(RichText::new("reading...").weak());
+                    }
+                }
+                ui.end_row();
+            }
+        });
+    ui.add_space(8.0);
+    ui.heading(tr(Lang::English, "dash.network"));
+    egui::Grid::new("dash-network")
+        .num_columns(2)
+        .spacing([24.0, 6.0])
+        .show(ui, |ui| match &app.dash.net {
+            None => {
+                ui.label(RichText::new("Network").strong());
+                ui.label(RichText::new("reading...").weak());
+                ui.end_row();
+            }
+            Some(n) => {
+                ui.label(RichText::new("Connection").strong());
+                match &n.adapter {
+                    Some(a) => ui.label(if a.name.eq_ignore_ascii_case(a.kind.label()) {
+                        // "Ethernet - Ethernet" says nothing twice.
+                        format!("{} ({})", a.name, a.description)
+                    } else {
+                        format!("{} - {} ({})", a.kind.label(), a.name, a.description)
+                    }),
+                    None => ui.label(RichText::new("no active network adapter").weak()),
+                };
+                ui.end_row();
+                if let Some(a) = &n.adapter {
+                    ui.label(RichText::new("Link speed").strong());
+                    ui.label(if a.link_bps == 0 {
+                        "unknown".to_string()
+                    } else {
+                        rustacer_core::netinfo::format_link_speed(a.link_bps)
+                    });
+                    ui.end_row();
+                    ui.label(RichText::new("Local address").strong());
+                    // The README screenshots never show a real address.
+                    ui.label(match (app.redact, a.main_address()) {
+                        (true, _) => "hidden".to_string(),
+                        (false, Some(ip)) => ip.to_string(),
+                        (false, None) => "none".to_string(),
+                    });
+                    ui.end_row();
+                }
+                ui.label(RichText::new("Open connections").strong());
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(format!(
+                        "{} established ({} endpoints)",
+                        n.established, n.total
+                    ));
+                    if ui.link("View").clicked() {
+                        go = Some((Page::Processes, Some(ProcTab::Network)));
+                    }
+                });
+                ui.end_row();
+                if let Some(e) = &n.error {
+                    ui.label("");
+                    ui.colored_label(Color32::from_rgb(0xe5, 0x48, 0x4d), e);
+                    ui.end_row();
+                }
+            }
+        });
+    if let Some((page, tab)) = go {
+        app.goto(page);
+        if let Some(t) = tab {
+            app.procs.tab = t;
+        }
+    }
+}
+
 fn dashboard(app: &mut App, ui: &mut Ui) {
     heading(ui, tr(Lang::English, "nav.dashboard"));
-    if ui
-        .add_enabled(
-            !app.report.running,
-            egui::Button::new(tr(Lang::English, "report.export")),
-        )
-        .clicked()
-    {
-        app.open_report_dialog();
-    }
+    let on_screen = ui.ctx().input(|i| {
+        let v = i.viewport();
+        v.visible() != Some(false) && v.minimized != Some(true)
+    });
+    app.refresh_dashboard(on_screen);
+    quick_actions(app, ui);
     ui.add_space(4.0);
     egui::ScrollArea::vertical().show(ui, |ui| {
         let s = &app.snap;
@@ -168,6 +368,8 @@ fn dashboard(app: &mut App, ui: &mut Ui) {
             ui.add_space(16.0);
             ui.label(format!("Uptime  {}", format_uptime(s.uptime_secs)));
         });
+        ui.separator();
+        dashboard_glance(app, ui);
         ui.separator();
         ui.heading("System information");
         match &app.info {

@@ -295,3 +295,27 @@ fn winget_error_descriptions() {
     println!("{t}");
     assert!(t.contains("install technology"), "{t}");
 }
+
+/// Active adapter, link speed and connection counts for the dashboard. Read-only.
+#[test]
+#[ignore]
+fn network_summary() {
+    let all = rustacer_core::netinfo::read_adapters().unwrap();
+    for a in &all {
+        println!(
+            "{} | {} | {:?} up={} gw={} {} {:?}",
+            a.name,
+            a.description,
+            a.kind,
+            a.up,
+            a.has_gateway,
+            rustacer_core::netinfo::format_link_speed(a.link_bps),
+            a.addresses
+        );
+    }
+    let s = rustacer_core::netinfo::summary();
+    println!("primary: {:?}", s.adapter.as_ref().map(|a| &a.name));
+    println!("{} established of {} endpoints", s.established, s.total);
+    assert!(s.adapter.is_some(), "no active adapter found");
+    assert!(s.total > 0);
+}

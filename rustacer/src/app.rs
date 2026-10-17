@@ -11,6 +11,7 @@ use rustacer_core::drivers::restore::{self, RestoreOutcome};
 use rustacer_core::drivers::wua::{self, DriverUpdate, InstallSummary, Progress};
 use rustacer_core::metrics::{self, Sampler, Snapshot, SystemInfo};
 use rustacer_core::netconn::{self, Connection};
+use rustacer_core::netinfo::{self, NetSummary};
 use rustacer_core::processes::{ProcessInfo, ProcessMonitor};
 use rustacer_core::report::{self, Format as ReportFormat};
 use rustacer_core::services::{self, Action as SvcAction, ServiceInfo};
@@ -104,6 +105,7 @@ pub enum Msg {
     Boot(Result<Box<BootReport>, String>),
     Health(Result<Box<HealthReport>, String>),
     Net(Result<Vec<Connection>, String>),
+    NetSummary(Box<NetSummary>),
     ReportProgress(String),
     ReportDone(Result<PathBuf, String>),
     Upgrades(Result<Box<UpgradeList>, String>),
@@ -216,6 +218,7 @@ pub struct StartupState {
     pub boot: BootState,
     pub entries: Vec<StartupEntry>,
     pub loading: bool,
+    pub loaded: bool,
     pub filter: String,
     pub new_name: String,
     pub new_exe: String,
@@ -312,6 +315,14 @@ impl Default for ReportState {
             cancel: Arc::new(AtomicBool::new(false)),
         }
     }
+}
+
+/// Data only the dashboard shows.
+#[derive(Default)]
+pub struct DashState {
+    pub net: Option<NetSummary>,
+    pub net_loading: bool,
+    pub net_at: Option<Instant>,
 }
 
 #[derive(Default)]
@@ -418,6 +429,7 @@ pub struct App {
     pub drivers: DriversState,
     pub disk: DiskState,
     pub health: HealthState,
+    pub dash: DashState,
     pub report: ReportState,
     pub services: ServicesState,
     pub procs: ProcState,
@@ -614,6 +626,7 @@ impl App {
             cleaner: CleanerState::default(),
             drivers: DriversState::default(),
             health: HealthState::default(),
+            dash: DashState::default(),
             report: ReportState::default(),
             disk: DiskState {
                 sort_col: 1,
@@ -933,6 +946,12 @@ impl App {
                 Msg::Startup(v) => {
                     self.startup.entries = v;
                     self.startup.loading = false;
+                    self.startup.loaded = true;
+                }
+                Msg::NetSummary(s) => {
+                    self.dash.net = Some(*s);
+                    self.dash.net_loading = false;
+                    self.dash.net_at = Some(Instant::now());
                 }
                 Msg::Services(v) => {
                     self.services.list = v;
@@ -1185,9 +1204,7 @@ impl App {
     /// Kick off a (re)load when a page becomes visible.
     pub fn load_page(&mut self, p: Page, force: bool) {
         match p {
-            Page::Startup
-                if force || (self.startup.entries.is_empty() && !self.startup.loading) =>
-            {
+            Page::Startup if force || (!self.startup.loaded && !self.startup.loading) => {
                 self.startup.loading = true;
                 self.spawn(|bus| bus.send(Msg::Startup(startup::list_entries())));
             }
@@ -1332,6 +1349,25 @@ impl App {
             });
             bus.send(Msg::DiskDone(r.map(Box::new).map_err(|e| e.to_string())));
         });
+    }
+
+    /// Keep the dashboard's startup, boot and network figures fresh. Called while the
+    /// dashboard is drawn; every read runs on a worker thread.
+    pub fn refresh_dashboard(&mut self, on_screen: bool) {
+        if !self.startup.loaded && !self.startup.loading {
+            self.load_page(Page::Startup, false);
+        }
+        if self.elevated && !self.startup.boot.loaded && !self.startup.boot.loading {
+            self.load_boot();
+        }
+        let stale = self
+            .dash
+            .net_at
+            .is_none_or(|t| t.elapsed() >= Duration::from_secs(10));
+        if on_screen && stale && !self.dash.net_loading {
+            self.dash.net_loading = true;
+            self.spawn(|bus| bus.send(Msg::NetSummary(Box::new(netinfo::summary()))));
+        }
     }
 
     /// Read the boot-performance log (admin only) on a worker thread.
