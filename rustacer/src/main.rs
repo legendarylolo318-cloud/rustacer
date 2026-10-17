@@ -33,7 +33,11 @@ fn main() -> eframe::Result<()> {
     );
 
     let capture_run = std::env::args().any(|a| {
-        a == "--screenshots" || a == "--resize-test" || a == "--smoke-test" || a == "--tray-test"
+        a == "--screenshots"
+            || a == "--resize-test"
+            || a == "--smoke-test"
+            || a == "--tray-test"
+            || a == "--soak-test"
     });
     // A copy already running in the tray is brought forward instead of starting a second one
     // (and a second tray icon). Restart-as-admin passes --restarted to skip this.

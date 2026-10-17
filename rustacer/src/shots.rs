@@ -183,6 +183,51 @@ fn resize_tour() -> Vec<Step> {
     big.scale = 1.5;
     big.dwell = Duration::from_millis(2500);
     v.push(big);
+    // The newer pages and tabs at 150% in the smallest window, and in high contrast.
+    let newer: [(&str, Page, Sub, Prep); 6] = [
+        ("disk", Page::DiskAnalyzer, Sub::None, Prep::ScanDisk),
+        ("health", Page::Health, Sub::None, Prep::None),
+        (
+            "boot",
+            Page::Startup,
+            Sub::Startup(StartupTab::Boot),
+            Prep::None,
+        ),
+        (
+            "updates",
+            Page::Uninstaller,
+            Sub::Uninstall(UninstTab::Updates),
+            Prep::None,
+        ),
+        (
+            "network",
+            Page::Processes,
+            Sub::Procs(ProcTab::Network),
+            Prep::None,
+        ),
+        ("settings", Page::Settings, Sub::None, Prep::None),
+    ];
+    for (i, (name, page, sub, prep)) in newer.iter().enumerate() {
+        let n: &'static str = Box::leak(format!("a11y-scale150-min-{name}").into_boxed_str());
+        let mut st = step(n, *page, None, *prep, Theme::Dark);
+        st.sub = *sub;
+        st.scale = 1.5;
+        if i == 0 {
+            st.win = Some(Win::Size(900.0, 560.0));
+        }
+        st.dwell = Duration::from_millis(2000);
+        v.push(st);
+    }
+    for (i, (name, page, sub, prep)) in newer.iter().enumerate() {
+        let n: &'static str = Box::leak(format!("a11y-highcontrast-{name}").into_boxed_str());
+        let mut st = step(n, *page, None, *prep, Theme::HighContrast);
+        st.sub = *sub;
+        if i == 0 {
+            st.win = Some(Win::Size(1180.0, 760.0));
+        }
+        st.dwell = Duration::from_millis(1500);
+        v.push(st);
+    }
     // Tabs inside pages.
     let tabs: Vec<(&'static str, Page, Sub)> = vec![
         (

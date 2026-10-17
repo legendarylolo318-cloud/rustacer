@@ -448,6 +448,38 @@ pub struct App {
     start_hidden_until: Option<Instant>,
     /// `--tray-test`: scripted hide / show / quit check (see `tray_test_step`).
     tray_test: Option<TrayTest>,
+    /// `--soak-test <seconds> [folder]`: long run on the Network tab with a disk scan.
+    soak: Option<Soak>,
+}
+
+/// Leak and busy-loop check: scan a folder (read-only), then sit on the Network tab,
+/// visiting the Disk Analyzer once a minute, and quit after the given time.
+pub struct Soak {
+    t0: Instant,
+    secs: u64,
+    folder: String,
+    started_scan: bool,
+    last_switch: Instant,
+}
+
+impl Soak {
+    fn from_args() -> Option<Self> {
+        let args: Vec<String> = std::env::args().collect();
+        let i = args.iter().position(|a| a == "--soak-test")?;
+        let secs = args.get(i + 1).and_then(|s| s.parse().ok()).unwrap_or(300);
+        let folder = args
+            .get(i + 2)
+            .cloned()
+            .or_else(|| std::env::var("ProgramFiles").ok())
+            .unwrap_or_else(|| r"C:\Program Files".into());
+        Some(Self {
+            t0: Instant::now(),
+            secs,
+            folder,
+            started_scan: false,
+            last_switch: Instant::now(),
+        })
+    }
 }
 
 /// Scripted self-test of the tray round trip. Writes PASS/FAIL lines to a text file.
@@ -614,12 +646,13 @@ impl App {
             tray_hint_shown: false,
             start_hidden_until: None,
             tray_test: None,
+            soak: Soak::from_args(),
             smoke: std::env::args()
                 .any(|a| a == "--smoke-test")
                 .then_some((None, 0)),
             cfg,
         };
-        let capture_run = app.shots.is_some() || app.smoke.is_some();
+        let capture_run = app.shots.is_some() || app.smoke.is_some() || app.soak.is_some();
         if capture_run {
             // Test runs never use the tray and must always be able to close.
             app.cfg.close_to_tray = false;
@@ -1740,6 +1773,43 @@ impl App {
         }
     }
 
+    fn soak_step(&mut self, ctx: &Context) {
+        let Some(mut s) = self.soak.take() else {
+            return;
+        };
+        ctx.request_repaint_after(Duration::from_millis(250));
+        if !s.started_scan {
+            info!("soak test: {} s, scanning {}", s.secs, s.folder);
+            self.goto(Page::DiskAnalyzer);
+            self.disk.root = s.folder.clone();
+            self.scan_disk();
+            s.started_scan = true;
+        } else if s.t0.elapsed() >= Duration::from_secs(s.secs) {
+            info!(
+                "soak test done: {} connections, {} processes, {} samples, disk scan {}",
+                self.procs.net.list.len(),
+                self.procs.list.len(),
+                self.history.len(),
+                if self.disk.report.is_some() {
+                    "finished"
+                } else {
+                    "not finished"
+                }
+            );
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            return;
+        } else if s.last_switch.elapsed() >= Duration::from_secs(60) {
+            // Mostly on the Network tab; a short look at the disk tree each minute.
+            self.goto(Page::DiskAnalyzer);
+            s.last_switch = Instant::now();
+        } else if s.last_switch.elapsed() >= Duration::from_secs(5) && self.page != Page::Processes
+        {
+            self.goto(Page::Processes);
+            self.procs.tab = ProcTab::Network;
+        }
+        self.soak = Some(s);
+    }
+
     fn smoke_step(&mut self, ctx: &Context) {
         let Some((started, step)) = self.smoke else {
             return;
@@ -1946,6 +2016,7 @@ impl eframe::App for App {
             crate::pages::show(self, ui, &ctx);
         });
         self.smoke_step(&ctx);
+        self.soak_step(&ctx);
         crate::shots::tick(self, &ctx);
         self.window_keys(&ctx);
         self.handle_close(&ctx);
