@@ -3,7 +3,7 @@
 All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.3.0] - 2026-10-17
 
 ### Added
 - **Disk Analyzer** page: cancellable read-only scan of a drive or folder, sortable folder tree with size bars, the 100 largest files, Open in Explorer and Move to Recycle Bin (confirmed, never permanent; links, system files and Windows/Program Files/ProgramData locations are refused and each path is re-checked inside the scanned folder before acting).
@@ -18,6 +18,16 @@ All notable changes to this project are documented here. The format follows
 
 ### Changed
 - `startup::set_self_registered` takes a second argument for the tray launch flag.
+- Restart as admin passes `--restarted` to the new copy.
+
+### Fixed (pre-release audit)
+- Boot performance read the wrong event fields (`IsDegradation`, `FullPath`); the manifest uses `BootIsDegradation` and `Path`, so degraded boots and path matching never worked. The parser is now fuzzed on truncated XML and rejects out-of-range timestamps.
+- Move to Recycle Bin: refuses when the scanned folder was swapped for a junction after the scan, acts on the canonical path it checked, refuses alternate data streams, trailing-dot names, folders containing links, and drives where Windows would delete permanently (Recycle Bin off, policy, or item too big).
+- With Close to tray on, Restart as admin left the old copy running in the tray (two processes, two icons). A second launch now shows the running copy instead of adding an icon, and test runs ignore the tray settings so they always exit.
+- winget ids cut short with an ellipsis are refused.
+- Link-local IPv6 addresses show their scope id.
+- The HTML report escapes the health class attribute.
+- `--soak-test` mode and high-contrast and 150% captures of every new page in `--resize-test`.
 
 ## [0.2.1] - 2026-10-16
 

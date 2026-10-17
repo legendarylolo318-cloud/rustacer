@@ -72,7 +72,14 @@ Sizes are shown in binary units (KiB, MiB, GiB). The UI strings come from a stri
 
 - The scan is read-only. It never follows junctions or symlinks (so nothing is counted twice and the scan cannot wander off the chosen folder), counts folders it cannot read, and can be cancelled. Sizes are file sizes, not size on disk, and hard links are counted once per name.
 - Folders under 1 MiB below the first level are folded into their parents so a whole-drive result stays small.
-- **Move to Recycle Bin** is the only action that changes anything, and it only ever moves to the Recycle Bin (`SHFileOperationW` with `FOF_ALLOWUNDO`; the shell's own prompt is left on, so an item too big for the bin is asked about instead of being deleted). It works only on a path you selected, only after a confirmation, and only on fixed local drives. Just before acting, the core library re-checks that the path is still inside the folder you scanned, that no link lies on the way, that it is not a system file, and that it is not under `C:\Windows`, `C:\Program Files*`, `C:\ProgramData`, a drive root, a top-level folder of the system drive or a user profile folder.
+- **Move to Recycle Bin** is the only action that changes anything, and it only ever moves to the Recycle Bin (`SHFileOperationW` with `FOF_ALLOWUNDO`). It works only on a path you selected, only after a confirmation, and only on fixed local drives.
+- Just before acting, the core library re-checks that:
+  - the scanned folder is still a real folder (not swapped for a junction) and the path is still inside it, with no link on the way;
+  - the path is not a link, a system file, an alternate data stream or a name Windows would rewrite (trailing dot or space);
+  - it is not under `C:\Windows`, `C:\Program Files*`, `C:\ProgramData`, a drive root, a top-level folder of the system drive or a user profile folder (also after resolving 8.3 short names);
+  - a folder contains no links and no unreadable subfolders.
+- It then reads the Recycle Bin settings for the drive and refuses when Windows would delete permanently instead: the "Remove files immediately" option, the policy that turns the Recycle Bin off, or an item bigger than the bin. The shell's own prompt is also left on as a last line of defence.
+- Rustacer acts on exactly the resolved path it checked. A file could still be swapped between the check and the move by another program; the window for that is milliseconds.
 
 ## Boot performance
 
@@ -96,6 +103,7 @@ Off by default. Under Settings > System tray:
 - **Close to tray** makes the close button hide the window instead of quitting. The tray icon's tooltip shows CPU and RAM, and its menu has **Open Rustacer** and **Quit Rustacer**. Alerts and toasts keep working while the window is hidden.
 - **Start minimized to tray** is available only when **Start with Windows** is on. The login launch then carries `--tray` and starts hidden once the tray icon exists (a launch from the Start menu always opens the window). The window can flash on screen for a moment at start.
 - Nothing starts with Windows unless you turn it on in Settings.
+- Only one copy runs in the tray: starting Rustacer again shows the running copy instead of adding a second icon. Restart as admin really exits the old copy.
 - Quit stops the background threads and removes the icon before the process ends. `rustacer.exe --tray-test` scripts a close, open, close, quit round trip and exits non-zero if the process does not exit.
 
 ## System report
@@ -150,6 +158,7 @@ The output is `target/release/rustacer.exe`.
 `rustacer.exe --screenshots <dir>` saves a PNG of a fixed tour of pages. It only triggers read-only actions (a cleaner scan and a Windows Update search).
 `rustacer.exe --resize-test <dir>` captures pages at the minimum size, a large size, maximized, fullscreen and restored, plus high-contrast and 150%-scale views, and logs the window and screen sizes.
 `rustacer.exe --tray-test` checks the tray round trip (hide, show, quit) and writes `rustacer-tray-test.txt` to the temp folder.
+`rustacer.exe --soak-test <seconds> [folder]` scans a folder (read-only) and then stays on the Network connections tab, for leak and CPU checks.
 None of these test modes save window or UI state to your profile.
 The read-only live tests run with `cargo test -p rustacer-core --test live_readonly -- --ignored --nocapture`. They list services, drivers, apps and startup entries, scan cleaner sizes, run a Windows Update driver search, read drive health, the boot log, the connection tables and the winget upgrade list, and build a redacted system report in memory. One test adds a tray icon for about a second. None of them change anything on the system.
 
@@ -169,7 +178,7 @@ Files:
 - These paths are covered by unit tests in temp folders and by guards, but were not exercised by automated runs against a real system: restore-point creation and deletion, driver backup, and service or process changes. Listing restore points also needs admin, so it was not run live.
 - Disk I/O in Resources is the sum of per-process I/O, so it undercounts system-level I/O.
 - The winget list and upgrade tables are parsed by column position, so they may misparse on non-English systems or with wide (CJK) characters in names.
-- Not exercised against a real system by automated runs: Move to Recycle Bin, `winget upgrade --id`, and (without admin) the boot log and the drive reliability counters. They are covered by unit tests, guards and fixtures. The tray round trip and the read-only listings were run live.
+- Not exercised against a real system by automated runs: Move to Recycle Bin and `winget upgrade --id` (deliberately), and the boot log and drive reliability counters with admin rights. They are covered by unit tests, guards and fixtures; the event field names were checked against the provider's manifest and the WMI property names and types against the class schema. The tray round trip, the read-only listings and a 5-minute soak run were run live.
 - Boot performance depends on Windows having recorded boot diagnostics; if the log was cleared or diagnostics are off, the tab says so.
 - "Start minimized to tray" briefly shows the window before hiding it, because the GUI toolkit shows the first frame.
 - `egui_plot` 0.37 targets egui 0.36, so the GUI uses eframe/egui 0.36. `cargo audit` reports only an "unmaintained" notice for `ttf-parser`, which comes in through egui's font stack.
