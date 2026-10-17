@@ -169,3 +169,35 @@ fn winget_upgrade_list() {
         println!("  [left out: {why}] {} ({})", u.name, u.id);
     }
 }
+
+/// Adds a tray icon for about a second, drives its callback through the simulate hook,
+/// then drops it and checks the thread ends. UI only; nothing on the system is changed.
+#[test]
+#[ignore]
+fn tray_icon_lifecycle() {
+    use rustacer_core::tray::{Tray, TrayEvent};
+    use std::sync::mpsc::channel;
+    use std::time::{Duration, Instant};
+    let (tx, rx) = channel();
+    let tray = Tray::start("Rustacer test", move |e| {
+        let _ = tx.send(e);
+    })
+    .unwrap();
+    println!("icon shown in the notification area: {}", tray.is_shown());
+    tray.set_tooltip("Rustacer - CPU 1% - RAM 2%");
+    tray.simulate(TrayEvent::Open);
+    tray.simulate(TrayEvent::Quit);
+    assert_eq!(
+        rx.recv_timeout(Duration::from_secs(2)).unwrap(),
+        TrayEvent::Open
+    );
+    assert_eq!(
+        rx.recv_timeout(Duration::from_secs(2)).unwrap(),
+        TrayEvent::Quit
+    );
+    std::thread::sleep(Duration::from_millis(500));
+    let t0 = Instant::now();
+    drop(tray); // joins the tray thread
+    println!("tray stopped in {:?}", t0.elapsed());
+    assert!(t0.elapsed() < Duration::from_secs(3));
+}

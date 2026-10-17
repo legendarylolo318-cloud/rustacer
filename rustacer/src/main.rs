@@ -32,8 +32,9 @@ fn main() -> eframe::Result<()> {
         rustacer_core::admin::is_elevated()
     );
 
-    let capture_run = std::env::args()
-        .any(|a| a == "--screenshots" || a == "--resize-test" || a == "--smoke-test");
+    let capture_run = std::env::args().any(|a| {
+        a == "--screenshots" || a == "--resize-test" || a == "--smoke-test" || a == "--tray-test"
+    });
     let options = eframe::NativeOptions {
         // Remember size, position and maximized state between launches
         // (stored by eframe under %APPDATA%\Rustacer\data). Test/capture runs never persist.

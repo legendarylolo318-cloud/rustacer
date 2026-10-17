@@ -397,14 +397,28 @@ pub fn is_self_registered() -> bool {
         .is_ok()
 }
 
-pub fn set_self_registered(on: bool) -> Result<()> {
+/// Command-line switch that tells a login launch to start hidden in the tray.
+pub const TRAY_ARG: &str = "--tray";
+
+/// The Run-key command for Rustacer itself.
+pub fn self_launch_command(exe: &std::path::Path, start_in_tray: bool) -> String {
+    if start_in_tray {
+        format!("\"{}\" {TRAY_ARG}", exe.display())
+    } else {
+        format!("\"{}\"", exe.display())
+    }
+}
+
+/// Register (or remove) Rustacer in the per-user Run key. With `start_in_tray` the login
+/// launch carries `--tray`, so manual launches still open the window normally.
+pub fn set_self_registered(on: bool, start_in_tray: bool) -> Result<()> {
     let (k, _) = Hive::User
         .root()
         .create_subkey(RUN)
         .map_err(|e| CoreError::Windows(e.to_string()))?;
     if on {
         let exe = std::env::current_exe()?;
-        k.set_value(SELF_VALUE, &format!("\"{}\"", exe.display()))
+        k.set_value(SELF_VALUE, &self_launch_command(&exe, start_in_tray))
             .map_err(|e| CoreError::Windows(e.to_string()))?;
     } else {
         let _ = k.delete_value(SELF_VALUE);
@@ -588,5 +602,18 @@ mod tests {
             wow32: true
         }
         .needs_admin());
+    }
+
+    #[test]
+    fn self_launch_command_adds_tray_flag_only_when_asked() {
+        let exe = std::path::Path::new(r"C:\Apps\Rustacer\rustacer.exe");
+        assert_eq!(
+            self_launch_command(exe, false),
+            r#""C:\Apps\Rustacer\rustacer.exe""#
+        );
+        assert_eq!(
+            self_launch_command(exe, true),
+            r#""C:\Apps\Rustacer\rustacer.exe" --tray"#
+        );
     }
 }

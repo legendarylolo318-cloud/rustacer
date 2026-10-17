@@ -13,6 +13,7 @@ pub mod processes;
 pub mod services;
 pub mod startup;
 pub mod strings;
+pub mod tray;
 pub mod uninstaller;
 pub mod util;
 

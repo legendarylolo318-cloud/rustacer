@@ -2798,15 +2798,49 @@ fn settings_body(app: &mut App, ui: &mut Ui) {
                 .checkbox(&mut sw, "Launch Rustacer when I sign in")
                 .changed()
             {
-                match rustacer_core::startup::set_self_registered(sw) {
+                match rustacer_core::startup::set_self_registered(sw, sw && app.cfg.start_minimized_to_tray) {
                     Ok(()) => {
                         app.self_registered = sw;
                         app.cfg.start_with_windows = sw;
+                        if !sw {
+                            // Starting minimized only applies to a Windows login launch.
+                            app.cfg.start_minimized_to_tray = false;
+                        }
                         changed = true;
                     }
                     Err(e) => app.notify(true, e.to_string()),
                 }
             }
+            ui.end_row();
+            ui.label("System tray");
+            ui.vertical(|ui| {
+                if ui
+                    .checkbox(
+                        &mut app.cfg.close_to_tray,
+                        "Close to tray (keep running in the notification area)",
+                    )
+                    .on_hover_text("The close button hides the window. Right-click the tray icon and choose Quit to exit. Alerts keep working.")
+                    .changed()
+                {
+                    changed = true;
+                }
+                let can = app.self_registered;
+                let mut min = app.cfg.start_minimized_to_tray && can;
+                let r = ui
+                    .add_enabled(
+                        can,
+                        egui::Checkbox::new(&mut min, "Start minimized to tray"),
+                    )
+                    .on_hover_text("Only applies when Windows starts Rustacer, so \"Start with Windows\" must be on.")
+                    .on_disabled_hover_text("Turn on \"Start with Windows\" first.");
+                if r.changed() {
+                    app.cfg.start_minimized_to_tray = min;
+                    if let Err(e) = rustacer_core::startup::set_self_registered(true, min) {
+                        app.notify(true, e.to_string());
+                    }
+                    changed = true;
+                }
+            });
             ui.end_row();
         });
     ui.add_space(12.0);

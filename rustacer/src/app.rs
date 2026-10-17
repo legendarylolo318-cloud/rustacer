@@ -13,12 +13,14 @@ use rustacer_core::metrics::{self, Sampler, Snapshot, SystemInfo};
 use rustacer_core::processes::{ProcessInfo, ProcessMonitor};
 use rustacer_core::services::{self, Action as SvcAction, ServiceInfo};
 use rustacer_core::startup::{self, StartupEntry};
+use rustacer_core::tray::{self, Tray, TrayEvent};
 use rustacer_core::uninstaller::{self, AppEntry, UpgradeList, WingetApp, WingetUpgrade};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::Arc;
+use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 use tracing::{error, info};
 
@@ -112,7 +114,7 @@ pub enum Msg {
 #[derive(Clone)]
 pub struct Bus {
     tx: Sender<Msg>,
-    ctx: Context,
+    pub ctx: Context,
 }
 
 impl Bus {
@@ -377,6 +379,28 @@ pub struct App {
     pub shots: Option<crate::shots::Shots>,
     /// Hide identifying details (PC name) - set during the screenshot tour.
     pub redact: bool,
+    /// Notification-area icon, present while a tray option is on.
+    tray: Option<Tray>,
+    /// Set by the tray's Quit item so the close request is not turned into "hide".
+    quit_requested: Arc<AtomicBool>,
+    /// Tells the background threads to stop (set on exit).
+    shutdown: Arc<AtomicBool>,
+    threads: Vec<JoinHandle<()>>,
+    tray_tip_at: Instant,
+    tray_hint_shown: bool,
+    /// Launched from the Windows Run key with `--tray`: hide once the tray icon exists,
+    /// giving up (and staying visible) after this deadline.
+    start_hidden_until: Option<Instant>,
+    /// `--tray-test`: scripted hide / show / quit check (see `tray_test_step`).
+    tray_test: Option<TrayTest>,
+}
+
+/// Scripted self-test of the tray round trip. Writes PASS/FAIL lines to a text file.
+pub struct TrayTest {
+    t0: Instant,
+    step: usize,
+    log: Vec<String>,
+    failed: bool,
 }
 
 /// A tab inside a page, for the smoke test and capture tours.
@@ -419,31 +443,43 @@ impl App {
         let interval = Arc::new(AtomicU64::new(cfg.refresh_interval_ms));
         let procs_active = Arc::new(AtomicBool::new(false));
 
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let mut threads = Vec::new();
         // Metrics sampler thread.
         {
             let bus = bus.clone();
             let interval = interval.clone();
-            std::thread::spawn(move || {
-                let mut s = Sampler::new();
-                loop {
-                    std::thread::sleep(Duration::from_millis(interval.load(Ordering::Relaxed)));
-                    bus.send(Msg::Sample(Box::new(s.sample())));
-                }
-            });
+            let stop = shutdown.clone();
+            threads.extend(
+                std::thread::Builder::new()
+                    .name("rustacer-sampler".into())
+                    .spawn(move || {
+                        let mut s = Sampler::new();
+                        while nap(&stop, interval.load(Ordering::Relaxed)) {
+                            bus.send(Msg::Sample(Box::new(s.sample())));
+                        }
+                    })
+                    .ok(),
+            );
         }
         // Process monitor thread (only refreshes while the Processes page is open).
         {
             let bus = bus.clone();
             let active = procs_active.clone();
-            std::thread::spawn(move || {
-                let mut m = ProcessMonitor::new();
-                loop {
-                    std::thread::sleep(Duration::from_millis(1500));
-                    if active.load(Ordering::Relaxed) {
-                        bus.send(Msg::Procs(m.refresh()));
-                    }
-                }
-            });
+            let stop = shutdown.clone();
+            threads.extend(
+                std::thread::Builder::new()
+                    .name("rustacer-procs".into())
+                    .spawn(move || {
+                        let mut m = ProcessMonitor::new();
+                        while nap(&stop, 1500) {
+                            if active.load(Ordering::Relaxed) {
+                                bus.send(Msg::Procs(m.refresh()));
+                            }
+                        }
+                    })
+                    .ok(),
+            );
         }
         // Static system info (WMI GPU query) off the UI thread.
         {
@@ -490,11 +526,39 @@ impl App {
             self_registered: startup::is_self_registered(),
             shots: crate::shots::Shots::from_args(),
             redact: std::env::args().any(|a| a == "--screenshots"),
+            tray: None,
+            quit_requested: Arc::new(AtomicBool::new(false)),
+            shutdown,
+            threads,
+            tray_tip_at: Instant::now(),
+            tray_hint_shown: false,
+            start_hidden_until: None,
+            tray_test: None,
             smoke: std::env::args()
                 .any(|a| a == "--smoke-test")
                 .then_some((None, 0)),
             cfg,
         };
+        let capture_run = app.shots.is_some() || app.smoke.is_some();
+        // `--tray-test` turns the tray on for this run only (nothing is saved).
+        if !capture_run && std::env::args().any(|a| a == "--tray-test") {
+            app.cfg.close_to_tray = true;
+            app.tray_test = Some(TrayTest {
+                t0: Instant::now(),
+                step: 0,
+                log: vec![],
+                failed: false,
+            });
+        }
+        app.sync_tray();
+        // A login launch from the Run key with `--tray` starts hidden (if the user turned that on).
+        if !capture_run
+            && app.cfg.start_minimized_to_tray
+            && app.self_registered
+            && std::env::args().any(|a| a == startup::TRAY_ARG)
+        {
+            app.start_hidden_until = Some(Instant::now() + Duration::from_secs(60));
+        }
         app.drivers.backup_dir = dirs_documents();
         if app.cfg.check_drivers_on_startup {
             app.scan_driver_updates();
@@ -509,6 +573,197 @@ impl App {
         std::thread::spawn(move || f(bus));
     }
 
+    // ---------- system tray ----------
+
+    /// Create or remove the tray icon so it matches the settings.
+    pub fn sync_tray(&mut self) {
+        let want = self.cfg.tray_enabled();
+        if want && self.tray.is_none() {
+            let ctx = self.bus.ctx.clone();
+            let quit = self.quit_requested.clone();
+            let tip =
+                tray::format_tooltip(self.snap.cpu_total, self.snap.ram_used, self.snap.ram_total);
+            match Tray::start(&tip, move |ev| match ev {
+                TrayEvent::Open => {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                    ctx.request_repaint();
+                }
+                TrayEvent::Quit => {
+                    quit.store(true, Ordering::Relaxed);
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    ctx.request_repaint();
+                }
+            }) {
+                Ok(t) => {
+                    info!("tray icon created");
+                    self.tray = Some(t);
+                }
+                Err(e) => {
+                    error!("tray icon failed: {e}");
+                    self.notify(true, e.to_string());
+                    // Do not leave the user with a setting that cannot work.
+                    self.cfg.close_to_tray = false;
+                    self.cfg.start_minimized_to_tray = false;
+                }
+            }
+        } else if !want && self.tray.is_some() {
+            info!("tray icon removed");
+            self.tray = None; // dropping stops the tray thread
+        }
+    }
+
+    fn tray_ready(&self) -> bool {
+        self.tray.as_ref().is_some_and(|t| t.is_shown())
+    }
+
+    /// The window's close button hides it instead when "Close to tray" is on.
+    fn handle_close(&mut self, ctx: &Context) {
+        if !ctx.input(|i| i.viewport().close_requested()) {
+            return;
+        }
+        if self.quit_requested.load(Ordering::Relaxed) {
+            return; // a real quit: let it close
+        }
+        if self.cfg.close_to_tray && self.tray_ready() {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+            info!("window hidden to the tray");
+            if !self.tray_hint_shown {
+                self.tray_hint_shown = true;
+                toast(
+                    "Rustacer is still running",
+                    "It is in the notification area. Right-click the icon and choose Quit to exit.",
+                );
+            }
+        }
+    }
+
+    /// Start hidden for a login launch, once the tray icon is really there.
+    fn handle_start_hidden(&mut self, ctx: &Context) {
+        let Some(deadline) = self.start_hidden_until else {
+            return;
+        };
+        if self.tray_ready() {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+            info!("started hidden in the tray");
+            self.start_hidden_until = None;
+        } else if Instant::now() > deadline {
+            error!("no tray icon after 60 s; keeping the window visible");
+            self.start_hidden_until = None;
+        }
+    }
+
+    fn update_tray_tooltip(&mut self) {
+        if let Some(t) = &self.tray {
+            if self.tray_tip_at.elapsed() >= Duration::from_secs(2) {
+                self.tray_tip_at = Instant::now();
+                t.set_tooltip(&tray::format_tooltip(
+                    self.snap.cpu_total,
+                    self.snap.ram_used,
+                    self.snap.ram_total,
+                ));
+            }
+        }
+    }
+
+    /// `--tray-test`: close -> hidden, tray Open -> visible, close -> hidden, tray Quit -> exit.
+    fn tray_test_step(&mut self, ctx: &Context) {
+        let Some(mut t) = self.tray_test.take() else {
+            return;
+        };
+        ctx.request_repaint();
+        let secs = t.t0.elapsed().as_secs_f32();
+        let visible = tray::window_visible("Rustacer");
+        let check = |t: &mut TrayTest, name: &str, ok: bool| {
+            t.log
+                .push(format!("{} {name}", if ok { "PASS" } else { "FAIL" }));
+            t.failed |= !ok;
+        };
+        match (t.step, secs) {
+            (0, s) if s >= 1.5 => {
+                check(
+                    &mut t,
+                    "tray icon is in the notification area",
+                    self.tray_ready(),
+                );
+                check(&mut t, "window visible at start", visible == Some(true));
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close); // like the X button
+                t.step = 1;
+            }
+            (1, s) if s >= 3.0 => {
+                check(
+                    &mut t,
+                    "close button hid the window",
+                    visible == Some(false),
+                );
+                if let Some(tr) = &self.tray {
+                    tr.simulate(TrayEvent::Open);
+                }
+                t.step = 2;
+            }
+            (2, s) if s >= 4.5 => {
+                check(
+                    &mut t,
+                    "tray Open showed the window again",
+                    visible == Some(true),
+                );
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                t.step = 3;
+            }
+            (3, s) if s >= 6.0 => {
+                check(
+                    &mut t,
+                    "second close hid the window",
+                    visible == Some(false),
+                );
+                // Hidden: frames must still run (alerts depend on them).
+                check(
+                    &mut t,
+                    "UI frames kept running while hidden (the script advanced)",
+                    true,
+                );
+                if let Some(tr) = &self.tray {
+                    tr.simulate(TrayEvent::Quit);
+                }
+                t.step = 4;
+            }
+            (4, s) if s >= 12.0 => {
+                // Quit did not end the process.
+                check(&mut t, "tray Quit ended the program", false);
+                Self::finish_tray_test(&t);
+                std::process::exit(2);
+            }
+            _ => {}
+        }
+        if t.step == 4 {
+            // Written before the quit request is processed; the process exit is checked by
+            // whoever launched the test.
+            Self::write_tray_test(&t, "QUIT-REQUESTED");
+        }
+        self.tray_test = Some(t);
+    }
+
+    fn write_tray_test(t: &TrayTest, tail: &str) {
+        let mut text = t.log.join("\n");
+        text.push('\n');
+        text.push_str(tail);
+        text.push('\n');
+        let _ = std::fs::write(std::env::temp_dir().join("rustacer-tray-test.txt"), text);
+    }
+
+    fn finish_tray_test(t: &TrayTest) {
+        Self::write_tray_test(
+            t,
+            if t.failed {
+                "RESULT: FAIL"
+            } else {
+                "RESULT: PASS"
+            },
+        );
+    }
+
     pub fn notify(&mut self, error: bool, text: impl Into<String>) {
         self.notice = Some((error, text.into(), Instant::now()));
     }
@@ -516,6 +771,7 @@ impl App {
     pub fn save_cfg(&mut self) {
         self.interval
             .store(self.cfg.refresh_interval_ms, Ordering::Relaxed);
+        self.sync_tray();
         if let Err(e) = self.cfg.save() {
             error!("saving config failed: {e}");
             self.notify(true, format!("Could not save settings: {e}"));
@@ -767,6 +1023,7 @@ impl App {
             }
         }
         self.snap = s;
+        self.update_tray_tooltip();
     }
 
     /// Kick off a (re)load when a page becomes visible.
@@ -1369,6 +1626,20 @@ impl App {
     }
 }
 
+/// Sleep up to `ms`, waking early (and returning false) when `stop` is set.
+fn nap(stop: &AtomicBool, ms: u64) -> bool {
+    let mut left = ms;
+    while left > 0 {
+        if stop.load(Ordering::Relaxed) {
+            return false;
+        }
+        let step = left.min(100);
+        std::thread::sleep(Duration::from_millis(step));
+        left -= step;
+    }
+    !stop.load(Ordering::Relaxed)
+}
+
 fn dirs_documents() -> String {
     std::env::var("USERPROFILE")
         .map(|p| format!("{p}\\Documents\\Rustacer-DriverBackup"))
@@ -1388,6 +1659,22 @@ pub fn toast(title: &str, body: &str) {
 }
 
 impl eframe::App for App {
+    /// Stop the background threads and remove the tray icon before the process ends.
+    fn on_exit(&mut self) {
+        info!("shutting down");
+        self.shutdown.store(true, Ordering::Relaxed);
+        self.drivers.cancel.store(true, Ordering::Relaxed);
+        self.disk.cancel.store(true, Ordering::Relaxed);
+        self.uninst.updates.cancel.store(true, Ordering::Relaxed);
+        self.tray = None; // removes the icon and joins the tray thread
+        for t in self.threads.drain(..) {
+            let _ = t.join();
+        }
+        if let Some(t) = &self.tray_test {
+            Self::finish_tray_test(t);
+        }
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.drain();
@@ -1400,6 +1687,9 @@ impl eframe::App for App {
         self.smoke_step(&ctx);
         crate::shots::tick(self, &ctx);
         self.window_keys(&ctx);
+        self.handle_close(&ctx);
+        self.handle_start_hidden(&ctx);
+        self.tray_test_step(&ctx);
         self.confirm_dialog(&ctx);
         self.driver_dialogs(&ctx);
         // History/gauges move on their own via sampler wakeups; keep a slow tick for notices.

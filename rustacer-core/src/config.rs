@@ -59,6 +59,11 @@ pub struct Config {
     pub ui_scale: f32,
     /// Turn off animations.
     pub reduce_motion: bool,
+    /// Keep running in the notification area when the window is closed. Off by default.
+    pub close_to_tray: bool,
+    /// Start hidden in the notification area when launched by "Start with Windows".
+    /// Only meaningful while `start_with_windows` is on. Off by default.
+    pub start_minimized_to_tray: bool,
 }
 
 impl Default for Config {
@@ -76,6 +81,8 @@ impl Default for Config {
             hide_inbox_drivers: true,
             ui_scale: 1.0,
             reduce_motion: false,
+            close_to_tray: false,
+            start_minimized_to_tray: false,
         }
     }
 }
@@ -93,7 +100,16 @@ impl Config {
         } else {
             1.0
         };
+        // Starting minimized only makes sense when Windows starts Rustacer.
+        if !self.start_with_windows {
+            self.start_minimized_to_tray = false;
+        }
         self
+    }
+
+    /// Is a tray icon wanted at all?
+    pub fn tray_enabled(&self) -> bool {
+        self.close_to_tray || self.start_minimized_to_tray
     }
 
     pub fn from_toml(s: &str) -> Result<Self> {
@@ -184,6 +200,30 @@ mod tests {
         assert!(c.reduce_motion);
         assert_eq!(c.theme, Theme::HighContrast);
         assert_eq!(Config::from_toml("ui_scale = 0.1").unwrap().ui_scale, 0.75);
+    }
+
+    #[test]
+    fn tray_is_off_by_default() {
+        let c = Config::default();
+        assert!(!c.close_to_tray && !c.start_minimized_to_tray && !c.tray_enabled());
+        // An old config file without the new keys keeps the tray off.
+        let old = Config::from_toml("theme = \"nord\"").unwrap();
+        assert!(!old.tray_enabled());
+    }
+
+    #[test]
+    fn start_minimized_requires_start_with_windows() {
+        let c = Config::from_toml("start_minimized_to_tray = true\nclose_to_tray = true").unwrap();
+        assert!(
+            !c.start_minimized_to_tray,
+            "no start-with-Windows, no start-minimized"
+        );
+        assert!(c.close_to_tray && c.tray_enabled());
+        let c =
+            Config::from_toml("start_minimized_to_tray = true\nstart_with_windows = true").unwrap();
+        assert!(c.start_minimized_to_tray && c.tray_enabled());
+        // Round trip keeps the flags.
+        assert_eq!(Config::from_toml(&c.to_toml().unwrap()).unwrap(), c);
     }
 
     #[test]
