@@ -3,9 +3,10 @@
 All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.3.3] - 2026-10-17
 
 ### Changed
+- App Updates hides apps whose installed version winget cannot read (such as Roblox) unless you tick "Show ... app(s) whose installed version winget cannot read". winget cannot tell if they are out of date, so they reappeared after every update, and upgrading Roblox installed a second copy next to the first.
 - App Updates leaves out Microsoft Edge and Edge WebView2, which update themselves and always fail through winget, and says why. An app that fails with "different install technology" is moved to the left-out list for the rest of the session.
 
 ## [0.3.2] - 2026-10-17
