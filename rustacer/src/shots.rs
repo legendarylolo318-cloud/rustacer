@@ -130,6 +130,7 @@ fn resize_tour() -> Vec<Step> {
     let pages = [
         ("dashboard", Page::Dashboard, None),
         ("disk", Page::DiskAnalyzer, None),
+        ("health", Page::Health, None),
         ("drivers", Page::Drivers, Some(DriverTab::Installed)),
         ("services", Page::Services, None),
         ("resources", Page::Resources, None),

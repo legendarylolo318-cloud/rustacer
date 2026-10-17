@@ -2,7 +2,7 @@
 //! run with `cargo test -p rustacer-core --test live_readonly -- --ignored --nocapture`.
 //! Nothing here installs, deletes or modifies anything.
 
-use rustacer_core::{bootperf, drivers, metrics, services, startup, uninstaller};
+use rustacer_core::{bootperf, drivehealth, drivers, metrics, services, startup, uninstaller};
 use std::sync::atomic::AtomicBool;
 
 #[test]
@@ -110,4 +110,31 @@ fn event_log_api_pipeline() {
     println!("{} events from the Application log", v.len());
     assert!(!v.is_empty());
     assert!(v.iter().all(|e| e.id > 0 && e.time_unix > 0));
+}
+
+/// Drive health over WMI. Read-only; counters need admin so they may be absent.
+#[test]
+#[ignore]
+fn drive_health() {
+    let r = drivehealth::read_health().unwrap();
+    println!("source: {}  counters: {}", r.source, r.counters_available);
+    for n in &r.notes {
+        println!("note: {n}");
+    }
+    for d in &r.drives {
+        println!(
+            "{} | {} {} {} bytes | {} | {:?}",
+            d.name,
+            d.media,
+            d.bus,
+            d.size,
+            d.health.label(),
+            d.counters
+        );
+        for why in &d.reasons {
+            println!("   - {why}");
+        }
+    }
+    assert!(!r.drives.is_empty());
+    assert!(r.drives.iter().all(|d| d.size > 0));
 }

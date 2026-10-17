@@ -5,6 +5,7 @@ pub mod bootperf;
 pub mod cleaner;
 pub mod config;
 pub mod diskusage;
+pub mod drivehealth;
 pub mod drivers;
 pub mod error;
 pub mod metrics;

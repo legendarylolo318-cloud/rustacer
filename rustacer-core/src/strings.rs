@@ -21,6 +21,7 @@ fn en(key: &'static str) -> &'static str {
         "nav.startup" => "Startup Apps",
         "nav.cleaner" => "System Cleaner",
         "nav.disk" => "Disk Analyzer",
+        "nav.health" => "Drive Health",
         "nav.drivers" => "Driver Updater",
         "nav.uninstaller" => "Uninstaller",
         "nav.resources" => "Resources",

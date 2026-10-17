@@ -86,7 +86,7 @@ pub fn show(app: &mut App, ui: &mut Ui, ctx: &Context) {
     let elevated = app.elevated;
     let needs_admin = matches!(
         app.page,
-        Page::Cleaner | Page::Drivers | Page::Services | Page::Startup
+        Page::Cleaner | Page::Drivers | Page::Services | Page::Startup | Page::Health
     );
     if admin_banner(ui, elevated, needs_admin) {
         app.restart_as_admin(ctx);
@@ -96,6 +96,7 @@ pub fn show(app: &mut App, ui: &mut Ui, ctx: &Context) {
         Page::Startup => startup(app, ui, ctx),
         Page::Cleaner => cleaner(app, ui),
         Page::DiskAnalyzer => disk_page(app, ui),
+        Page::Health => health_page(app, ui, ctx),
         Page::Drivers => drivers(app, ui),
         Page::Services => services_page(app, ui),
         Page::Processes => processes(app, ui),
@@ -1148,6 +1149,158 @@ fn disk_page(app: &mut App, ui: &mut Ui) {
             Some("You can restore it from the Recycle Bin. If Windows says it is too big for the Recycle Bin it will ask before deleting anything.".into()),
             Act::RecycleDisk(root, vec![path]),
         );
+    }
+}
+
+// ---------------- drive health ----------------
+
+fn health_color(h: rustacer_core::drivehealth::Health) -> Color32 {
+    use rustacer_core::drivehealth::Health;
+    match h {
+        Health::Healthy => Color32::from_rgb(0x3d, 0xb8, 0x6b),
+        Health::Warning => Color32::from_rgb(0xf5, 0xa6, 0x23),
+        Health::Unhealthy => Color32::from_rgb(0xe5, 0x48, 0x4d),
+        Health::Unknown => Color32::from_rgb(0x9a, 0xa0, 0xa6),
+    }
+}
+
+fn health_page(app: &mut App, ui: &mut Ui, ctx: &Context) {
+    heading(ui, tr(Lang::English, "nav.health"));
+    ui.label(
+        RichText::new(
+            "Read-only. Health comes from Windows storage WMI; nothing on the drives is changed.",
+        )
+        .weak(),
+    );
+    ui.horizontal(|ui| {
+        if ui.button(tr(Lang::English, "common.refresh")).clicked() {
+            app.load_page(Page::Health, true);
+        }
+        if app.health.loading {
+            ui.spinner();
+        }
+    });
+    if let Some(e) = &app.health.error {
+        ui.colored_label(Color32::from_rgb(0xe5, 0x48, 0x4d), e);
+    }
+    let Some(rep) = &app.health.report else {
+        return;
+    };
+    let mut restart = false;
+    egui::ScrollArea::vertical().show(ui, |ui| {
+        if !app.elevated && !rep.counters_available {
+            ui.horizontal_wrapped(|ui| {
+                ui.colored_label(
+                    ui.visuals().warn_fg_color,
+                    "Temperature, wear, power-on hours and error counts need administrator rights.",
+                );
+                if ui
+                    .add(primary_btn(ui, tr(Lang::English, "admin.restart")))
+                    .clicked()
+                {
+                    restart = true;
+                }
+            });
+        }
+        for n in &rep.notes {
+            ui.label(RichText::new(n).weak());
+        }
+        for d in &rep.drives {
+            ui.add_space(6.0);
+            ui.group(|ui| {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(RichText::new(&d.name).strong().size(16.0));
+                    // The state is always written out; colour is only a second cue.
+                    ui.label(
+                        RichText::new(format!("[{}]", d.health.label()))
+                            .strong()
+                            .color(health_color(d.health)),
+                    );
+                });
+                ui.label(
+                    RichText::new(format!(
+                        "{} {}, {}{}",
+                        d.media,
+                        d.bus,
+                        format_bytes(d.size),
+                        if d.firmware.is_empty() {
+                            String::new()
+                        } else {
+                            format!(", firmware {}", d.firmware)
+                        }
+                    ))
+                    .weak(),
+                );
+                for why in &d.reasons {
+                    ui.colored_label(health_color(d.health), why);
+                }
+                let dash = |v: Option<String>| v.unwrap_or_else(|| "n/a".into());
+                egui::Grid::new(("health-grid", &d.device_id))
+                    .num_columns(2)
+                    .spacing([20.0, 3.0])
+                    .show(ui, |ui| {
+                        let c = d.counters.as_ref();
+                        let rows: [(&str, String); 6] = [
+                            (
+                                "Windows health",
+                                format!(
+                                    "{}{}",
+                                    d.reported.label(),
+                                    if d.operational.is_empty() {
+                                        String::new()
+                                    } else {
+                                        format!(" ({})", d.operational.join(", "))
+                                    }
+                                ),
+                            ),
+                            (
+                                "Temperature",
+                                dash(
+                                    c.and_then(|c| c.temperature_c)
+                                        .map(|t| format!("{t} \u{b0}C")),
+                                ),
+                            ),
+                            (
+                                "Life used (wear)",
+                                dash(c.and_then(|c| c.wear_percent).map(|w| format!("{w}%"))),
+                            ),
+                            (
+                                "Power-on hours",
+                                dash(
+                                    c.and_then(|c| c.power_on_hours)
+                                        .map(|h| format!("{h} h (about {} days)", h / 24)),
+                                ),
+                            ),
+                            (
+                                "Read errors",
+                                dash(c.and_then(|c| c.read_errors_total).map(|e| {
+                                    format!(
+                                        "{e} ({} uncorrected)",
+                                        c.and_then(|c| c.read_errors_uncorrected).unwrap_or(0)
+                                    )
+                                })),
+                            ),
+                            (
+                                "Write errors",
+                                dash(c.and_then(|c| c.write_errors_total).map(|e| {
+                                    format!(
+                                        "{e} ({} uncorrected)",
+                                        c.and_then(|c| c.write_errors_uncorrected).unwrap_or(0)
+                                    )
+                                })),
+                            ),
+                        ];
+                        for (k, v) in rows {
+                            ui.label(RichText::new(k).strong());
+                            ui.label(v);
+                            ui.end_row();
+                        }
+                    });
+            });
+        }
+    });
+    if restart {
+        app.restart_as_admin(ctx);
     }
 }
 

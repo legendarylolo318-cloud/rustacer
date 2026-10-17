@@ -3,6 +3,7 @@ use rustacer_core::bootperf::{self, BootReport};
 use rustacer_core::cleaner::{self, Category, CleanReport, ScanResult};
 use rustacer_core::config::{Config, Theme};
 use rustacer_core::diskusage::{self, DiskReport, ScanProgress as DiskProgress};
+use rustacer_core::drivehealth::{self, HealthReport};
 use rustacer_core::drivers::backup::{self, BackupResult};
 use rustacer_core::drivers::gpu::GpuVendor;
 use rustacer_core::drivers::installed::{self, InstalledDriver};
@@ -27,6 +28,7 @@ pub enum Page {
     Startup,
     Cleaner,
     DiskAnalyzer,
+    Health,
     Drivers,
     Services,
     Processes,
@@ -36,11 +38,12 @@ pub enum Page {
 }
 
 impl Page {
-    pub const ALL: [Page; 10] = [
+    pub const ALL: [Page; 11] = [
         Page::Dashboard,
         Page::Startup,
         Page::Cleaner,
         Page::DiskAnalyzer,
+        Page::Health,
         Page::Drivers,
         Page::Services,
         Page::Processes,
@@ -54,6 +57,7 @@ impl Page {
             Page::Startup => "nav.startup",
             Page::Cleaner => "nav.cleaner",
             Page::DiskAnalyzer => "nav.disk",
+            Page::Health => "nav.health",
             Page::Drivers => "nav.drivers",
             Page::Services => "nav.services",
             Page::Processes => "nav.processes",
@@ -91,6 +95,7 @@ pub enum Msg {
     /// Paths that were moved to the Recycle Bin from the disk analyzer.
     DiskRecycled(Vec<PathBuf>),
     Boot(Result<Box<BootReport>, String>),
+    Health(Result<Box<HealthReport>, String>),
     Notice {
         error: bool,
         text: String,
@@ -270,6 +275,14 @@ pub struct DiskState {
 }
 
 #[derive(Default)]
+pub struct HealthState {
+    pub report: Option<HealthReport>,
+    pub loading: bool,
+    pub loaded: bool,
+    pub error: Option<String>,
+}
+
+#[derive(Default)]
 pub struct ServicesState {
     pub list: Vec<ServiceInfo>,
     pub loading: bool,
@@ -321,6 +334,7 @@ pub struct App {
     pub cleaner: CleanerState,
     pub drivers: DriversState,
     pub disk: DiskState,
+    pub health: HealthState,
     pub services: ServicesState,
     pub procs: ProcState,
     pub uninst: UninstState,
@@ -351,6 +365,7 @@ const SMOKE_STEPS: &[(Page, Sub)] = &[
     (Page::Startup, Sub::Startup(StartupTab::Boot)),
     (Page::Cleaner, Sub::None),
     (Page::DiskAnalyzer, Sub::None),
+    (Page::Health, Sub::None),
     (Page::Drivers, Sub::Driver(DriverTab::Installed)),
     (Page::Drivers, Sub::Driver(DriverTab::Updates)),
     (Page::Drivers, Sub::Driver(DriverTab::Backup)),
@@ -423,6 +438,7 @@ impl App {
             startup: StartupState::default(),
             cleaner: CleanerState::default(),
             drivers: DriversState::default(),
+            health: HealthState::default(),
             disk: DiskState {
                 sort_col: 1,
                 ..Default::default()
@@ -629,6 +645,17 @@ impl App {
                         }
                     }
                 }
+                Msg::Health(r) => {
+                    self.health.loading = false;
+                    self.health.loaded = true;
+                    match r {
+                        Ok(rep) => {
+                            self.health.error = None;
+                            self.health.report = Some(*rep);
+                        }
+                        Err(e) => self.health.error = Some(e),
+                    }
+                }
                 Msg::Boot(r) => {
                     self.startup.boot.loading = false;
                     self.startup.boot.loaded = true;
@@ -692,6 +719,16 @@ impl App {
             {
                 self.startup.loading = true;
                 self.spawn(|bus| bus.send(Msg::Startup(startup::list_entries())));
+            }
+            Page::Health if force || (!self.health.loaded && !self.health.loading) => {
+                self.health.loading = true;
+                self.spawn(|bus| {
+                    bus.send(Msg::Health(
+                        drivehealth::read_health()
+                            .map(Box::new)
+                            .map_err(|e| e.to_string()),
+                    ));
+                });
             }
             Page::Services if force || !self.services.loaded => {
                 if !self.services.loading {
