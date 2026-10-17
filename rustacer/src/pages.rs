@@ -1246,7 +1246,13 @@ fn health_page(app: &mut App, ui: &mut Ui, ctx: &Context) {
                 for why in &d.reasons {
                     ui.colored_label(health_color(d.health), why);
                 }
-                let dash = |v: Option<String>| v.unwrap_or_else(|| "n/a".into());
+                // "n/a": no counters at all (usually not elevated); otherwise the drive left it blank.
+                let missing = if d.counters.is_some() {
+                    "not reported by the drive"
+                } else {
+                    "n/a"
+                };
+                let dash = |v: Option<String>| v.unwrap_or_else(|| missing.into());
                 egui::Grid::new(("health-grid", &d.device_id))
                     .num_columns(2)
                     .spacing([20.0, 3.0])
