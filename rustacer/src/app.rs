@@ -34,6 +34,7 @@ pub enum Page {
     DiskAnalyzer,
     Health,
     Drivers,
+    AppUpdates,
     Services,
     Processes,
     Uninstaller,
@@ -42,13 +43,14 @@ pub enum Page {
 }
 
 impl Page {
-    pub const ALL: [Page; 11] = [
+    pub const ALL: [Page; 12] = [
         Page::Dashboard,
         Page::Startup,
         Page::Cleaner,
         Page::DiskAnalyzer,
         Page::Health,
         Page::Drivers,
+        Page::AppUpdates,
         Page::Services,
         Page::Processes,
         Page::Uninstaller,
@@ -63,6 +65,7 @@ impl Page {
             Page::DiskAnalyzer => "nav.disk",
             Page::Health => "nav.health",
             Page::Drivers => "nav.drivers",
+            Page::AppUpdates => "nav.updates",
             Page::Services => "nav.services",
             Page::Processes => "nav.processes",
             Page::Uninstaller => "nav.uninstaller",
@@ -359,13 +362,6 @@ pub struct ProcState {
     pub sort_desc: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum UninstTab {
-    #[default]
-    Apps,
-    Updates,
-}
-
 #[derive(Default)]
 pub struct UpdatesState {
     pub items: Vec<(WingetUpgrade, bool)>,
@@ -382,7 +378,6 @@ pub struct UpdatesState {
 
 #[derive(Default)]
 pub struct UninstState {
-    pub tab: UninstTab,
     pub updates: UpdatesState,
     pub list: Vec<AppEntry>,
     pub loading: bool,
@@ -496,7 +491,6 @@ pub enum Sub {
     None,
     Driver(DriverTab),
     Startup(StartupTab),
-    Uninstall(UninstTab),
     Procs(ProcTab),
 }
 
@@ -515,8 +509,8 @@ const SMOKE_STEPS: &[(Page, Sub)] = &[
     (Page::Services, Sub::None),
     (Page::Processes, Sub::Procs(ProcTab::Processes)),
     (Page::Processes, Sub::Procs(ProcTab::Network)),
-    (Page::Uninstaller, Sub::Uninstall(UninstTab::Apps)),
-    (Page::Uninstaller, Sub::Uninstall(UninstTab::Updates)),
+    (Page::AppUpdates, Sub::None),
+    (Page::Uninstaller, Sub::None),
     (Page::Resources, Sub::None),
     (Page::Settings, Sub::None),
 ];
@@ -1227,7 +1221,6 @@ impl App {
             Sub::None => {}
             Sub::Driver(t) => self.drivers.tab = t,
             Sub::Startup(t) => self.startup.tab = t,
-            Sub::Uninstall(t) => self.uninst.tab = t,
             Sub::Procs(t) => self.procs.tab = t,
         }
     }
@@ -1636,11 +1629,10 @@ impl App {
                             pkg.name
                         )));
                         info!("user confirmed winget upgrade of {}", pkg.id);
-                        let outcome = match uninstaller::winget_upgrade(&pkg.id) {
+                        let unknown = uninstaller::version_unknown(&pkg.version);
+                        let outcome = match uninstaller::winget_upgrade(&pkg.id, unknown) {
                             Ok(Some(0)) => "Finished".to_string(),
-                            Ok(Some(code)) => {
-                                format!("winget ended with exit code {code} (0x{code:08X})")
-                            }
+                            Ok(Some(code)) => uninstaller::explain_exit_code(code),
                             Ok(None) => "Started (Windows gave no result code)".to_string(),
                             Err(e) => format!("Not run: {e}"),
                         };

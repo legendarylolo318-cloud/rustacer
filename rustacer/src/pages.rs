@@ -100,7 +100,8 @@ pub fn show(app: &mut App, ui: &mut Ui, ctx: &Context) {
         Page::Drivers => drivers(app, ui),
         Page::Services => services_page(app, ui),
         Page::Processes => processes(app, ui),
-        Page::Uninstaller => uninstaller(app, ui, ctx),
+        Page::Uninstaller => uninstaller(app, ui),
+        Page::AppUpdates => app_updates(app, ui, ctx),
         Page::Resources => resources(app, ui),
         Page::Settings => settings(app, ui),
     }
@@ -2455,34 +2456,9 @@ fn processes_list(app: &mut App, ui: &mut Ui) {
 
 // ---------------- uninstaller ----------------
 
-fn uninstaller(app: &mut App, ui: &mut Ui, ctx: &Context) {
+fn uninstaller(app: &mut App, ui: &mut Ui) {
     heading(ui, tr(Lang::English, "nav.uninstaller"));
-    if !app.uninst.winget_probed {
-        app.uninst.winget_probed = true;
-        app.spawn(|bus| {
-            bus.send(Msg::WingetAvailable(
-                rustacer_core::uninstaller::winget_available(),
-            ))
-        });
-    }
-    ui.horizontal(|ui| {
-        for (t, key) in [
-            (UninstTab::Apps, "uninstall.apps"),
-            (UninstTab::Updates, "uninstall.updates"),
-        ] {
-            if ui
-                .selectable_label(app.uninst.tab == t, tr(Lang::English, key))
-                .clicked()
-            {
-                app.uninst.tab = t;
-            }
-        }
-    });
-    ui.separator();
-    if app.uninst.tab == UninstTab::Updates {
-        app_updates(app, ui, ctx);
-        return;
-    }
+    probe_winget(app);
     ui.horizontal(|ui| {
         search_box(ui, &mut app.uninst.filter);
         ui.checkbox(
@@ -2620,7 +2596,21 @@ fn uninstaller(app: &mut App, ui: &mut Ui, ctx: &Context) {
 
 type AppEntryOwned = rustacer_core::uninstaller::AppEntry;
 
+/// Ask (once, on a worker) whether winget is installed.
+fn probe_winget(app: &mut App) {
+    if !app.uninst.winget_probed {
+        app.uninst.winget_probed = true;
+        app.spawn(|bus| {
+            bus.send(Msg::WingetAvailable(
+                rustacer_core::uninstaller::winget_available(),
+            ))
+        });
+    }
+}
+
 fn app_updates(app: &mut App, ui: &mut Ui, ctx: &Context) {
+    heading(ui, tr(Lang::English, "nav.updates"));
+    probe_winget(app);
     ui.label(
         RichText::new(
             "Uses winget. Nothing is installed until you tick packages and confirm; winget then shows its own window for each one.",
@@ -2815,7 +2805,13 @@ fn app_updates(app: &mut App, ui: &mut Ui, ctx: &Context) {
                     ui.label(&p.id);
                 });
                 row.col(|ui| {
-                    ui.label(&p.version);
+                    if rustacer_core::uninstaller::version_unknown(&p.version) {
+                        ui.label(&p.version).on_hover_text(
+                            "winget cannot read the installed version, so this one is upgraded with --include-unknown.",
+                        );
+                    } else {
+                        ui.label(&p.version);
+                    }
                 });
                 row.col(|ui| {
                     ui.label(&p.available);

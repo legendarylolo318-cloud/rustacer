@@ -3,6 +3,15 @@
 All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Changed
+- App Updates is its own page in the sidebar instead of a tab in the Uninstaller.
+
+### Fixed
+- Packages whose installed version is Unknown (for example Roblox) always failed with "No applicable update found"; they are now upgraded with winget's `--include-unknown`.
+- Failed upgrades showed only a raw exit code; they now show winget's own description of the error, with advice for apps that update themselves (such as Edge).
+
 ## [0.3.1] - 2026-10-17
 
 ### Changed

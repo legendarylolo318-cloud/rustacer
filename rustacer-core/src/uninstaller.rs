@@ -447,7 +447,10 @@ pub fn list_upgrades(cancel: &AtomicBool) -> Result<UpgradeList> {
 /// Upgrade one package with `winget upgrade --id <id> --exact` through ShellExecute, so
 /// winget's own window and any UAC prompt are shown. Waits for it to finish and returns the
 /// exit code (`None` if Windows gave no process handle). No silent or force flags are passed.
-pub fn winget_upgrade(id: &str) -> Result<Option<u32>> {
+///
+/// `include_unknown` adds winget's `--include-unknown`, which a package whose installed version
+/// winget cannot read ("Unknown") needs; without it winget answers "No applicable update found".
+pub fn winget_upgrade(id: &str, include_unknown: bool) -> Result<Option<u32>> {
     validate_winget_id(id)?;
     if let Some(why) = gpu_driver_reason("", id) {
         return Err(CoreError::Blocked(format!(
@@ -456,12 +459,60 @@ pub fn winget_upgrade(id: &str) -> Result<Option<u32>> {
     }
     // Upgrades run elevated, so winget does not need a UAC prompt per package.
     crate::admin::require_admin()?;
-    info!("winget upgrade --id {id} --exact");
-    shell_execute_wait(
-        "open",
-        &winget_launcher(),
-        Some(&format!("upgrade --id {id} --exact")),
-    )
+    let args = upgrade_args(id, include_unknown);
+    info!("winget {args}");
+    shell_execute_wait("open", &winget_launcher(), Some(&args))
+}
+
+/// The winget arguments for one package. Never adds silent, force or agreement flags.
+pub fn upgrade_args(id: &str, include_unknown: bool) -> String {
+    if include_unknown {
+        format!("upgrade --id {id} --exact --include-unknown")
+    } else {
+        format!("upgrade --id {id} --exact")
+    }
+}
+
+/// Is the installed version one winget could not determine?
+pub fn version_unknown(v: &str) -> bool {
+    let v = v.trim();
+    v.is_empty() || v.eq_ignore_ascii_case("unknown")
+}
+
+/// Pull the description out of `winget error <code>` output:
+/// `0x8a15002b : APPINSTALLER_CLI_ERROR_UPDATE_NOT_APPLICABLE` then `No applicable update found`.
+pub fn parse_winget_error(text: &str) -> Option<String> {
+    let lines: Vec<&str> = text
+        .lines()
+        .map(|l| l.rsplit('\r').next().unwrap_or("").trim())
+        .collect();
+    let i = lines
+        .iter()
+        .position(|l| l.to_ascii_lowercase().starts_with("0x") && l.contains(':'))?;
+    lines[i + 1..]
+        .iter()
+        .find(|l| !l.is_empty())
+        .map(|l| l.to_string())
+}
+
+/// What a winget exit code means, in winget's own words (from `winget error`), plus advice
+/// for the codes that need the user to do something else.
+pub fn explain_exit_code(code: u32) -> String {
+    let hex = format!("0x{code:08X}");
+    let described = run_hidden("winget", &["error", &hex])
+        .ok()
+        .and_then(|(_, out)| parse_winget_error(&out));
+    let advice = match code {
+        // UPDATE_INSTALL_TECHNOLOGY_MISMATCH
+        0x8A15_008E => " The app updates itself (for example Edge) or was installed another way; update it from the app or reinstall it with winget.",
+        // UPDATE_NOT_APPLICABLE
+        0x8A15_002B => " winget found no update it can apply to the installed copy.",
+        _ => "",
+    };
+    match described {
+        Some(d) => format!("{d} ({hex}).{advice}"),
+        None => format!("winget ended with error {hex}.{advice}"),
+    }
 }
 
 /// winget's App Installer package id. Upgrading it replaces winget itself.
@@ -774,18 +825,62 @@ Pinned Tool    Vendor.PinnedTool   1.0      2.0        winget\n\
     #[test]
     fn upgrade_refuses_bad_and_gpu_ids_before_running_anything() {
         assert!(matches!(
-            winget_upgrade("bad id"),
-            Err(CoreError::Blocked(_))
-        ));
-        assert!(matches!(winget_upgrade(""), Err(CoreError::Blocked(_))));
-        assert!(matches!(
-            winget_upgrade("--silent"),
+            winget_upgrade("bad id", false),
             Err(CoreError::Blocked(_))
         ));
         assert!(matches!(
-            winget_upgrade("Nvidia.GraphicsDriver"),
+            winget_upgrade("", false),
             Err(CoreError::Blocked(_))
         ));
+        assert!(matches!(
+            winget_upgrade("--silent", true),
+            Err(CoreError::Blocked(_))
+        ));
+        assert!(matches!(
+            winget_upgrade("Nvidia.GraphicsDriver", false),
+            Err(CoreError::Blocked(_))
+        ));
+    }
+
+    #[test]
+    fn upgrade_args_only_add_include_unknown_when_asked() {
+        assert_eq!(
+            upgrade_args("Git.Git", false),
+            "upgrade --id Git.Git --exact"
+        );
+        assert_eq!(
+            upgrade_args("Roblox.Roblox", true),
+            "upgrade --id Roblox.Roblox --exact --include-unknown"
+        );
+        for a in [upgrade_args("X.Y", false), upgrade_args("X.Y", true)] {
+            for banned in [
+                "--silent",
+                "--force",
+                "--accept",
+                "-h ",
+                "--disable-interactivity",
+            ] {
+                assert!(!a.contains(banned), "{a}");
+            }
+        }
+        assert!(version_unknown("Unknown") && version_unknown("") && version_unknown(" unknown "));
+        assert!(!version_unknown("1.2.3") && !version_unknown("< 2.0"));
+    }
+
+    #[test]
+    fn winget_error_output_is_parsed() {
+        let out = "0x8a15008e : APPINSTALLER_CLI_ERROR_UPDATE_INSTALL_TECHNOLOGY_MISMATCH\r\nAn upgrade is available but uses a different install technology than the current installation\r\n";
+        assert_eq!(
+            parse_winget_error(out).as_deref(),
+            Some("An upgrade is available but uses a different install technology than the current installation")
+        );
+        let out = "   - \r0x8a15002b : APPINSTALLER_CLI_ERROR_UPDATE_NOT_APPLICABLE\n\nNo applicable update found\n";
+        assert_eq!(
+            parse_winget_error(out).as_deref(),
+            Some("No applicable update found")
+        );
+        assert_eq!(parse_winget_error("Unrecognized command"), None);
+        assert_eq!(parse_winget_error(""), None);
     }
 
     #[test]

@@ -280,3 +280,18 @@ fn system_report_redaction_live() {
         assert!(!text.to_lowercase().contains(&user));
     }
 }
+
+/// Turns winget exit codes into winget's own descriptions (runs `winget error`, read-only).
+#[test]
+#[ignore]
+fn winget_error_descriptions() {
+    if !uninstaller::winget_available() {
+        return;
+    }
+    let t = uninstaller::explain_exit_code(0x8A15_002B);
+    println!("{t}");
+    assert!(t.contains("No applicable update"), "{t}");
+    let t = uninstaller::explain_exit_code(0x8A15_008E);
+    println!("{t}");
+    assert!(t.contains("install technology"), "{t}");
+}
