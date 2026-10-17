@@ -230,13 +230,14 @@ pub fn list_winget() -> Result<Vec<WingetApp>> {
 }
 
 /// A winget package id is passed to winget as a single argument, so it must not contain
-/// anything that could split or alter the command line.
+/// anything that could split or alter the command line. An id winget cut short with "..."
+/// (U+2026) on a narrow console is refused too: it would not match the package.
 pub fn validate_winget_id(id: &str) -> Result<()> {
     let bad = id.is_empty()
         || id.starts_with('-')
         || id
             .chars()
-            .any(|c| c.is_whitespace() || c.is_control() || "\"&|<>^%".contains(c));
+            .any(|c| c.is_whitespace() || c.is_control() || "\"&|<>^%\u{2026}".contains(c));
     if bad {
         Err(CoreError::Blocked("Invalid winget package id.".into()))
     } else {
@@ -726,5 +727,30 @@ Pinned Tool    Vendor.PinnedTool   1.0      2.0        winget\n\
             winget_upgrade("Nvidia.GraphicsDriver"),
             Err(CoreError::Blocked(_))
         ));
+    }
+
+    #[test]
+    fn parses_real_winget_layout_with_adjacent_columns() {
+        // Layout captured from `winget upgrade` on Windows 11 (names changed): the version
+        // columns touch with a single space, and one version is "Unknown".
+        let t = "Name                                            Id                                    Version       Available     Source\r\n\
+------------------------------------------------------------------------------------------------------------------------\r\n\
+Microsoft Edge                                  Microsoft.Edge                        155.0.4283.45 155.0.4283.62 winget\r\n\
+Game Player for alice                           Vendor.Player                         Unknown       0.743         winget\r\n\
+Visual Studio Community 2022                    Microsoft.VisualStudio.2022.Community 17.14.41      17.14.42      winget\r\n\
+10 upgrades available.\r\n";
+        let v = parse_winget_upgrade(t);
+        assert_eq!(v.len(), 3);
+        assert_eq!(v[0].version, "155.0.4283.45");
+        assert_eq!(v[0].available, "155.0.4283.62");
+        assert_eq!(v[1].version, "Unknown");
+        assert_eq!(v[2].id, "Microsoft.VisualStudio.2022.Community");
+        assert_eq!(v[2].available, "17.14.42");
+        assert!(v.iter().all(|u| u.source == "winget"));
+    }
+
+    #[test]
+    fn truncated_ids_are_not_usable() {
+        assert!(validate_winget_id("Microsoft.VisualStudio.2022.Comm\u{2026}").is_err());
     }
 }
