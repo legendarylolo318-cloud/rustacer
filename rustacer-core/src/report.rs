@@ -666,7 +666,7 @@ fn html_table(rows: &[V], out: &mut String) {
             let v = pairs.iter().find(|(k, _)| k == *c).map(|(_, v)| v);
             let text = v.map(cell_text).unwrap_or_else(|| "-".into());
             let class = if c.as_str() == "health" {
-                format!(" class=\"{}\"", text.to_ascii_lowercase())
+                format!(" class=\"{}\"", html_escape(&text.to_ascii_lowercase()))
             } else {
                 String::new()
             };
