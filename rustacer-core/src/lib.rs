@@ -9,6 +9,7 @@ pub mod drivehealth;
 pub mod drivers;
 pub mod error;
 pub mod metrics;
+pub mod netconn;
 pub mod processes;
 pub mod services;
 pub mod startup;

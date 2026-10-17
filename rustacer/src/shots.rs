@@ -5,7 +5,7 @@
 //! * `--resize-test <dir>`: drives the window through small, large, maximized and
 //!   fullscreen states and captures pages in each, to catch layout bugs.
 
-use crate::app::{App, DriverTab, Page, StartupTab, Sub, UninstTab};
+use crate::app::{App, DriverTab, Page, ProcTab, StartupTab, Sub, UninstTab};
 use eframe::egui::{self, Context};
 use rustacer_core::config::Theme;
 use std::path::{Path, PathBuf};
@@ -194,6 +194,11 @@ fn resize_tour() -> Vec<Step> {
             "tab-uninstaller-updates",
             Page::Uninstaller,
             Sub::Uninstall(UninstTab::Updates),
+        ),
+        (
+            "tab-processes-network",
+            Page::Processes,
+            Sub::Procs(ProcTab::Network),
         ),
     ];
     for (name, page, sub) in tabs {

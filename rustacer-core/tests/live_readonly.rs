@@ -2,7 +2,9 @@
 //! run with `cargo test -p rustacer-core --test live_readonly -- --ignored --nocapture`.
 //! Nothing here installs, deletes or modifies anything.
 
-use rustacer_core::{bootperf, drivehealth, drivers, metrics, services, startup, uninstaller};
+use rustacer_core::{
+    bootperf, drivehealth, drivers, metrics, netconn, services, startup, uninstaller,
+};
 use std::sync::atomic::AtomicBool;
 
 #[test]
@@ -200,4 +202,31 @@ fn tray_icon_lifecycle() {
     drop(tray); // joins the tray thread
     println!("tray stopped in {:?}", t0.elapsed());
     assert!(t0.elapsed() < Duration::from_secs(3));
+}
+
+/// Reads the live TCP/UDP tables (IPv4 and IPv6) and resolves owners. Read-only.
+#[test]
+#[ignore]
+fn network_connections() {
+    let v = netconn::read_connections().unwrap();
+    println!("{} endpoints", v.len());
+    let mut m = rustacer_core::processes::ProcessMonitor::new();
+    let names: std::collections::HashMap<u32, String> =
+        m.refresh().into_iter().map(|p| (p.pid, p.name)).collect();
+    for c in v.iter().filter(|c| c.state == "Established").take(5) {
+        println!(
+            "  {} {} -> {} [{}] pid {} {}",
+            c.protocol.label(c.v6),
+            c.local_text(),
+            c.remote_text(),
+            c.state,
+            c.pid,
+            names.get(&c.pid).map(String::as_str).unwrap_or("?")
+        );
+    }
+    assert!(v.iter().any(|c| c.protocol == netconn::Protocol::Tcp));
+    assert!(v.iter().any(|c| c.protocol == netconn::Protocol::Udp));
+    assert!(v.iter().any(|c| c.state == "Listen"));
+    assert!(v.iter().any(|c| c.v6));
+    assert!(v.iter().all(|c| c.local_port > 0 || c.state != "Listen"));
 }

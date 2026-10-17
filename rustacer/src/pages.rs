@@ -2012,9 +2012,257 @@ fn services_page(app: &mut App, ui: &mut Ui) {
 // ---------------- processes ----------------
 
 fn processes(app: &mut App, ui: &mut Ui) {
-    heading(ui, "Processes");
+    heading(ui, tr(Lang::English, "nav.processes"));
+    // Process names are needed by both tabs.
     app.procs_active
         .store(true, std::sync::atomic::Ordering::Relaxed);
+    ui.horizontal(|ui| {
+        for (t, key) in [
+            (ProcTab::Processes, "procs.list"),
+            (ProcTab::Network, "procs.network"),
+        ] {
+            if ui
+                .selectable_label(app.procs.tab == t, tr(Lang::English, key))
+                .clicked()
+            {
+                app.procs.tab = t;
+            }
+        }
+    });
+    ui.separator();
+    // The connection table is only polled while its tab is on screen and the window is shown.
+    let on_screen = ui.ctx().input(|i| {
+        let v = i.viewport();
+        v.visible() != Some(false) && v.minimized != Some(true)
+    });
+    app.net_active.store(
+        app.procs.tab == ProcTab::Network && on_screen,
+        std::sync::atomic::Ordering::Relaxed,
+    );
+    match app.procs.tab {
+        ProcTab::Processes => processes_list(app, ui),
+        ProcTab::Network => network_tab(app, ui),
+    }
+}
+
+/// Ask to end a process, through the same critical-process guard as the Processes tab.
+fn ask_kill(app: &mut App, pid: u32, name: String) {
+    if rustacer_core::processes::is_critical(&name) || pid <= 4 {
+        app.notify(
+            true,
+            format!("'{name}' is a critical system process and cannot be ended."),
+        );
+    } else {
+        app.ask(
+            "End process",
+            format!("End '{name}' (PID {pid})?"),
+            Some("Unsaved data in this process will be lost.".into()),
+            Act::KillProcess(pid, name),
+        );
+    }
+}
+
+fn network_tab(app: &mut App, ui: &mut Ui) {
+    use rustacer_core::netconn::Connection;
+    ui.label(
+        RichText::new(
+            "TCP and UDP endpoints (IPv4 and IPv6) with their process. Refreshes every 2 s while this tab is open.",
+        )
+        .weak(),
+    );
+    if !app.procs.net.loaded && !app.procs.net.loading {
+        app.load_net();
+    }
+    let names: std::collections::HashMap<u32, String> = app
+        .procs
+        .list
+        .iter()
+        .map(|p| (p.pid, p.name.clone()))
+        .collect();
+    let name_of = |pid: u32| -> String {
+        match (pid, names.get(&pid)) {
+            (_, Some(n)) => n.clone(),
+            (0, None) => "System (no owner)".to_string(),
+            (p, None) => format!("PID {p}"),
+        }
+    };
+    search_box(ui, &mut app.procs.net.filter);
+    let f = app.procs.net.filter.trim().to_lowercase();
+    let matches = |c: &Connection| -> bool {
+        if f.is_empty() {
+            return true;
+        }
+        if let Ok(n) = f.parse::<u32>() {
+            return c.pid == n
+                || u32::from(c.local_port) == n
+                || (c.remote.is_some() && u32::from(c.remote_port) == n);
+        }
+        name_of(c.pid).to_lowercase().contains(&f)
+            || c.local_text().to_lowercase().contains(&f)
+            || c.remote_text().to_lowercase().contains(&f)
+            || c.state.to_lowercase().contains(&f)
+            || c.protocol.label(c.v6).to_lowercase() == f
+    };
+    let mut rows: Vec<usize> = app
+        .procs
+        .net
+        .list
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| matches(c))
+        .map(|(i, _)| i)
+        .collect();
+    let (col, desc) = (app.procs.net.sort_col, app.procs.net.sort_desc);
+    {
+        let l = &app.procs.net.list;
+        rows.sort_by(|&a, &b| {
+            let (x, y) = (&l[a], &l[b]);
+            let o = match col {
+                0 => name_of(x.pid)
+                    .to_lowercase()
+                    .cmp(&name_of(y.pid).to_lowercase()),
+                1 => x.pid.cmp(&y.pid),
+                2 => x.protocol.label(x.v6).cmp(y.protocol.label(y.v6)),
+                3 => x.local_port.cmp(&y.local_port),
+                4 => x.remote_port.cmp(&y.remote_port),
+                _ => x.state.cmp(y.state),
+            }
+            .then_with(|| x.pid.cmp(&y.pid))
+            .then_with(|| x.local_port.cmp(&y.local_port));
+            if desc {
+                o.reverse()
+            } else {
+                o
+            }
+        });
+    }
+    let sel = app.procs.net.selected.clone();
+    let mut kill: Option<(u32, String)> = None;
+    ui.horizontal_wrapped(|ui| {
+        let can = sel.as_ref().is_some_and(|c| c.pid > 4);
+        let r = ui.add_enabled(can, danger_btn(ui, "End process"));
+        let r = r.on_disabled_hover_text("Select a connection that belongs to a normal process.");
+        if r.clicked() {
+            if let Some(c) = &sel {
+                kill = Some((c.pid, name_of(c.pid)));
+            }
+        }
+        if ui.button(tr(Lang::English, "common.refresh")).clicked() {
+            app.load_net();
+        }
+        if app.procs.net.loading {
+            ui.spinner();
+        }
+        ui.label(
+            RichText::new(format!(
+                "{} of {} endpoints",
+                rows.len(),
+                app.procs.net.list.len()
+            ))
+            .weak(),
+        );
+        if let Some(c) = &sel {
+            ui.label(RichText::new(format!("Selected: {} (PID {})", name_of(c.pid), c.pid)).weak());
+        }
+    });
+    if let Some(e) = &app.procs.net.error {
+        ui.colored_label(Color32::from_rgb(0xe5, 0x48, 0x4d), e);
+    }
+    let heads = [
+        "Process",
+        "PID",
+        "Protocol",
+        "Local address",
+        "Remote address",
+        "State",
+    ];
+    let mut new_sort: Option<usize> = None;
+    let mut select: Option<Connection> = None;
+    let (k, salt) = table_layout(ui);
+    TableBuilder::new(ui)
+        .id_salt(("net", salt))
+        .striped(true)
+        .resizable(true)
+        .sense(Sense::click())
+        .column(Column::initial(k * 170.0).clip(true))
+        .column(Column::initial(k * 60.0))
+        .column(Column::initial(k * 70.0))
+        .column(Column::initial(k * 200.0).clip(true))
+        .column(Column::initial(k * 200.0).clip(true))
+        .column(
+            Column::remainder()
+                .resizable(false)
+                .at_least(70.0)
+                .clip(true),
+        )
+        .header(ROW_H, |mut h| {
+            for (i, t) in heads.iter().enumerate() {
+                h.col(|ui| {
+                    let arrow = if app.procs.net.sort_col == i {
+                        if app.procs.net.sort_desc {
+                            " v"
+                        } else {
+                            " ^"
+                        }
+                    } else {
+                        ""
+                    };
+                    if ui
+                        .add(
+                            egui::Button::new(RichText::new(format!("{t}{arrow}")).strong())
+                                .frame(false),
+                        )
+                        .clicked()
+                    {
+                        new_sort = Some(i);
+                    }
+                });
+            }
+        })
+        .body(|body| {
+            body.rows(ROW_H, rows.len(), |mut row| {
+                let c = &app.procs.net.list[rows[row.index()]];
+                row.set_selected(app.procs.net.selected.as_ref() == Some(c));
+                row.col(|ui| {
+                    ui.label(name_of(c.pid));
+                });
+                row.col(|ui| {
+                    ui.label(c.pid.to_string());
+                });
+                row.col(|ui| {
+                    ui.label(c.protocol.label(c.v6));
+                });
+                row.col(|ui| {
+                    ui.label(c.local_text());
+                });
+                row.col(|ui| {
+                    ui.label(c.remote_text());
+                });
+                row.col(|ui| {
+                    ui.label(if c.state.is_empty() { "-" } else { c.state });
+                });
+                if row.response().clicked() {
+                    select = Some(c.clone());
+                }
+            });
+        });
+    if let Some(c) = select {
+        app.procs.net.selected = Some(c);
+    }
+    if let Some(i) = new_sort {
+        if app.procs.net.sort_col == i {
+            app.procs.net.sort_desc = !app.procs.net.sort_desc;
+        } else {
+            app.procs.net.sort_col = i;
+            app.procs.net.sort_desc = false;
+        }
+    }
+    if let Some((pid, name)) = kill {
+        ask_kill(app, pid, name);
+    }
+}
+
+fn processes_list(app: &mut App, ui: &mut Ui) {
     search_box(ui, &mut app.procs.filter);
     let f = app.procs.filter.to_lowercase();
     let mut rows: Vec<usize> = app

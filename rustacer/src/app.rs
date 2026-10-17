@@ -10,6 +10,7 @@ use rustacer_core::drivers::installed::{self, InstalledDriver};
 use rustacer_core::drivers::restore::{self, RestoreOutcome};
 use rustacer_core::drivers::wua::{self, DriverUpdate, InstallSummary, Progress};
 use rustacer_core::metrics::{self, Sampler, Snapshot, SystemInfo};
+use rustacer_core::netconn::{self, Connection};
 use rustacer_core::processes::{ProcessInfo, ProcessMonitor};
 use rustacer_core::services::{self, Action as SvcAction, ServiceInfo};
 use rustacer_core::startup::{self, StartupEntry};
@@ -98,6 +99,7 @@ pub enum Msg {
     DiskRecycled(Vec<PathBuf>),
     Boot(Result<Box<BootReport>, String>),
     Health(Result<Box<HealthReport>, String>),
+    Net(Result<Vec<Connection>, String>),
     Upgrades(Result<Box<UpgradeList>, String>),
     UpgradeProgress(String),
     /// (package id, outcome text) for every package that was attempted.
@@ -298,8 +300,30 @@ pub struct ServicesState {
     pub loaded: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ProcTab {
+    #[default]
+    Processes,
+    Network,
+}
+
+#[derive(Default)]
+pub struct NetState {
+    pub list: Vec<Connection>,
+    pub loading: bool,
+    pub loaded: bool,
+    pub error: Option<String>,
+    pub filter: String,
+    pub selected: Option<Connection>,
+    /// 0 process, 1 PID, 2 protocol, 3 local, 4 remote, 5 state.
+    pub sort_col: usize,
+    pub sort_desc: bool,
+}
+
 #[derive(Default)]
 pub struct ProcState {
+    pub tab: ProcTab,
+    pub net: NetState,
     pub list: Vec<ProcessInfo>,
     pub filter: String,
     pub selected: Option<u32>,
@@ -360,6 +384,8 @@ pub struct App {
     pub res_range: f64,
     pub interval: Arc<AtomicU64>,
     pub procs_active: Arc<AtomicBool>,
+    /// True only while the Network tab is on screen and the window is visible.
+    pub net_active: Arc<AtomicBool>,
     pub startup: StartupState,
     pub cleaner: CleanerState,
     pub drivers: DriversState,
@@ -410,6 +436,7 @@ pub enum Sub {
     Driver(DriverTab),
     Startup(StartupTab),
     Uninstall(UninstTab),
+    Procs(ProcTab),
 }
 
 const SMOKE_STEPS: &[(Page, Sub)] = &[
@@ -425,7 +452,8 @@ const SMOKE_STEPS: &[(Page, Sub)] = &[
     (Page::Drivers, Sub::Driver(DriverTab::Gpu)),
     (Page::Drivers, Sub::Driver(DriverTab::RestorePoints)),
     (Page::Services, Sub::None),
-    (Page::Processes, Sub::None),
+    (Page::Processes, Sub::Procs(ProcTab::Processes)),
+    (Page::Processes, Sub::Procs(ProcTab::Network)),
     (Page::Uninstaller, Sub::Uninstall(UninstTab::Apps)),
     (Page::Uninstaller, Sub::Uninstall(UninstTab::Updates)),
     (Page::Resources, Sub::None),
@@ -442,6 +470,7 @@ impl App {
         };
         let interval = Arc::new(AtomicU64::new(cfg.refresh_interval_ms));
         let procs_active = Arc::new(AtomicBool::new(false));
+        let net_active = Arc::new(AtomicBool::new(false));
 
         let shutdown = Arc::new(AtomicBool::new(false));
         let mut threads = Vec::new();
@@ -481,6 +510,26 @@ impl App {
                     .ok(),
             );
         }
+        // Connection table: refreshed every 2 s, and only while the Network tab is showing.
+        {
+            let bus = bus.clone();
+            let active = net_active.clone();
+            let stop = shutdown.clone();
+            threads.extend(
+                std::thread::Builder::new()
+                    .name("rustacer-net".into())
+                    .spawn(move || {
+                        while nap(&stop, 2000) {
+                            if active.load(Ordering::Relaxed) {
+                                bus.send(Msg::Net(
+                                    netconn::read_connections().map_err(|e| e.to_string()),
+                                ));
+                            }
+                        }
+                    })
+                    .ok(),
+            );
+        }
         // Static system info (WMI GPU query) off the UI thread.
         {
             let bus = bus.clone();
@@ -501,6 +550,7 @@ impl App {
             res_range: 60.0,
             interval,
             procs_active,
+            net_active,
             startup: StartupState::default(),
             cleaner: CleanerState::default(),
             drivers: DriversState::default(),
@@ -942,6 +992,18 @@ impl App {
                         Err(e) => self.health.error = Some(e),
                     }
                 }
+                Msg::Net(r) => {
+                    let n = &mut self.procs.net;
+                    n.loading = false;
+                    n.loaded = true;
+                    match r {
+                        Ok(v) => {
+                            n.error = None;
+                            n.list = v;
+                        }
+                        Err(e) => n.error = Some(e),
+                    }
+                }
                 Msg::Upgrades(r) => {
                     let u = &mut self.uninst.updates;
                     u.checking = false;
@@ -1086,6 +1148,7 @@ impl App {
             Sub::Driver(t) => self.drivers.tab = t,
             Sub::Startup(t) => self.startup.tab = t,
             Sub::Uninstall(t) => self.uninst.tab = t,
+            Sub::Procs(t) => self.procs.tab = t,
         }
     }
 
@@ -1093,6 +1156,7 @@ impl App {
         self.page = p;
         self.procs_active
             .store(p == Page::Processes, Ordering::Relaxed);
+        self.net_active.store(false, Ordering::Relaxed);
         self.load_page(p, false);
     }
 
@@ -1183,6 +1247,19 @@ impl App {
                 bootperf::read_boot_report()
                     .map(Box::new)
                     .map_err(|e| e.to_string()),
+            ));
+        });
+    }
+
+    /// One immediate read of the connection tables (the 2 s poll takes over afterwards).
+    pub fn load_net(&mut self) {
+        if self.procs.net.loading {
+            return;
+        }
+        self.procs.net.loading = true;
+        self.spawn(|bus| {
+            bus.send(Msg::Net(
+                netconn::read_connections().map_err(|e| e.to_string()),
             ));
         });
     }
