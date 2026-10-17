@@ -12,7 +12,8 @@ pub fn severity_color(pct: f32) -> Color32 {
 
 /// Circular gauge with a centred percentage and caption underneath.
 pub fn gauge(ui: &mut Ui, title: &str, pct: f32, detail: &str) {
-    let size = Vec2::new(150.0, 170.0);
+    // Tall enough that the caption under the arc is never clipped at large UI scales.
+    let size = Vec2::new(150.0, 182.0);
     let (rect, resp) = ui.allocate_exact_size(size, Sense::hover());
     // Painted shapes are invisible to screen readers; describe the gauge explicitly.
     let spoken = format!("{title}: {:.0} percent. {detail}", pct.clamp(0.0, 100.0));
