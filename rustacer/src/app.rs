@@ -620,6 +620,12 @@ impl App {
             cfg,
         };
         let capture_run = app.shots.is_some() || app.smoke.is_some();
+        if capture_run {
+            // Test runs never use the tray and must always be able to close.
+            app.cfg.close_to_tray = false;
+            app.cfg.start_minimized_to_tray = false;
+            app.quit_requested.store(true, Ordering::Relaxed);
+        }
         // `--tray-test` turns the tray on for this run only (nothing is saved).
         if !capture_run && std::env::args().any(|a| a == "--tray-test") {
             app.cfg.close_to_tray = true;
@@ -1214,7 +1220,12 @@ impl App {
 
     pub fn restart_as_admin(&mut self, ctx: &Context) {
         match rustacer_core::admin::restart_as_admin() {
-            Ok(()) => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
+            Ok(()) => {
+                // A real exit: "Close to tray" must not keep this copy running next to
+                // the elevated one (two processes, two tray icons).
+                self.quit_requested.store(true, Ordering::Relaxed);
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close)
+            }
             Err(e) => self.notify(true, e.to_string()),
         }
     }

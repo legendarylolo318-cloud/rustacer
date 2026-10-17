@@ -27,11 +27,14 @@ pub fn is_elevated() -> bool {
     }
 }
 
+/// Passed to the elevated copy so it does not hand over to the copy that is closing.
+pub const RESTARTED_ARG: &str = "--restarted";
+
 /// Relaunch this executable with a UAC prompt. The caller should exit
 /// the current process if this returns Ok.
 pub fn restart_as_admin() -> Result<()> {
     let exe = std::env::current_exe()?;
-    shell_execute("runas", &exe.to_string_lossy(), None)
+    shell_execute("runas", &exe.to_string_lossy(), Some(RESTARTED_ARG))
         .map_err(|e| CoreError::Message(format!("Elevation was cancelled or failed: {e}")))
 }
 

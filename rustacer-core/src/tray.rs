@@ -115,6 +115,19 @@ pub fn window_visible(title: &str) -> Option<bool> {
     Some(unsafe { IsWindowVisible(hwnd) }.as_bool())
 }
 
+/// If another Rustacer is already running with a tray icon, ask it to show its window and
+/// return true, so this launch can exit instead of adding a second icon. Returns false when
+/// there is none, or when it cannot be reached (for example it runs elevated and this copy
+/// does not).
+pub fn signal_running_instance() -> bool {
+    // SAFETY: FindWindowW only reads the static class name.
+    let Ok(hwnd) = (unsafe { FindWindowW(CLASS, PCWSTR::null()) }) else {
+        return false;
+    };
+    // SAFETY: posting a message to a window of another process; a stale handle only fails.
+    unsafe { PostMessageW(Some(hwnd), WM_TRAY_SIMULATE, WPARAM(1), LPARAM(0)) }.is_ok()
+}
+
 struct IconGuard(HICON);
 
 impl Drop for IconGuard {
@@ -348,7 +361,13 @@ fn tray_thread(
                 Some(hinst),
                 None,
             )
-        }?;
+        }
+        .inspect_err(|_| {
+            // SAFETY: unregistering the class this thread registered; nothing uses it.
+            unsafe {
+                let _ = UnregisterClassW(CLASS, Some(hinst));
+            }
+        })?;
         // SAFETY: registering a message name; returns 0 on failure, which never matches.
         let taskbar_created = unsafe { RegisterWindowMessageW(w!("TaskbarCreated")) };
         let state = Box::into_raw(Box::new(WndState {
