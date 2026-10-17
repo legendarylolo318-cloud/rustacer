@@ -3,7 +3,7 @@
 All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.4.0] - 2026-10-17
 
 ### Added
 - Dashboard **Quick actions**: scan for junk, check app updates, scan for driver updates, analyze the Windows drive, export a report. They only start read-only scans or open a dialog.
