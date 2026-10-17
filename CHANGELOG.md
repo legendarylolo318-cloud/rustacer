@@ -3,6 +3,22 @@
 All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+- **Disk Analyzer** page: cancellable read-only scan of a drive or folder, sortable folder tree with size bars, the 100 largest files, Open in Explorer and Move to Recycle Bin (confirmed, never permanent; links, system files and Windows/Program Files/ProgramData locations are refused and each path is re-checked inside the scanned folder before acting).
+- **Boot performance** tab in Startup Apps (admin): boot-time history from Diagnostics-Performance events 100 and 101, and the apps that slowed boot, linked to their startup entries.
+- **Drive Health** page: read-only drive health from Windows storage WMI with Healthy / Warning / Unhealthy in text, plus temperature, wear, power-on hours and error counts (admin), with a SMART fallback.
+- **App updates** tab in the Uninstaller: lists `winget upgrade` results and upgrades the packages you tick, one at a time through winget's own window. GPU driver packages are left out.
+- **System tray mode** (off by default): Close to tray and Start minimized to tray (needs Start with Windows), a CPU/RAM tooltip, Open and Quit menu. Alerts keep working while hidden; quitting stops the background threads and removes the icon. `--tray-test` self-test.
+- **Export system report** (Dashboard and Settings): HTML (self-contained) or JSON, with the PC name, user name and `C:\Users\<name>` paths redacted by default.
+- **Network connections** tab in Processes: TCP and UDP endpoints for IPv4 and IPv6 with owning process, refreshed every 2 s while visible, with filter and a guarded End process.
+- Ctrl+PageDown / Ctrl+PageUp cycle through all pages (Ctrl+1 to Ctrl+9 still jump to the first nine).
+- Read-only live tests for drive health, the boot log, connections, the winget upgrade list, the tray and report redaction.
+
+### Changed
+- `startup::set_self_registered` takes a second argument for the tray launch flag.
+
 ## [0.2.1] - 2026-10-16
 
 ### Fixed

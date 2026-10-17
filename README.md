@@ -25,15 +25,17 @@ Stacer is GPL-3.0; Rustacer is MIT.
 
 | Page | What it does |
 |------|--------------|
-| Dashboard | Live CPU, RAM and per-drive gauges, network up/down speed, uptime, and OS / CPU / GPU / RAM / hostname / boot-time info |
-| Startup Apps | Lists Run and RunOnce entries (HKCU, HKLM and the 32-bit HKLM view), the user and all-users Startup folders, and logon tasks from Task Scheduler (outside `\Microsoft`). Run and Startup-folder entries are disabled through `StartupApproved`, the same way Task Manager does it, so you can turn them back on. Disabled RunOnce entries are parked under `HKCU\Software\Rustacer\DisabledRunOnce`. You can also add a per-user entry (program and arguments) or delete an entry |
+| Dashboard | Live CPU, RAM and per-drive gauges, network up/down speed, uptime, and OS / CPU / GPU / RAM / hostname / boot-time info. The **Export system report...** button saves a report (see below) |
+| Startup Apps | Lists Run and RunOnce entries (HKCU, HKLM and the 32-bit HKLM view), the user and all-users Startup folders, and logon tasks from Task Scheduler (outside `\Microsoft`). Run and Startup-folder entries are disabled through `StartupApproved`, the same way Task Manager does it, so you can turn them back on. Disabled RunOnce entries are parked under `HKCU\Software\Rustacer\DisabledRunOnce`. You can also add a per-user entry (program and arguments) or delete an entry. The **Boot performance** tab (admin) shows boot-time history and the apps Windows says slowed boot, and links each one to its startup entry |
 | System Cleaner | Scans first and shows the size and file count per category. You tick categories, confirm, and it deletes. Categories: user `%TEMP%`, `C:\Windows\Temp` (admin), the Recycle Bin, the thumbnail and icon cache, Windows Error Reporting files, the Windows Update download cache (admin; `wuauserv` is stopped and restarted), and the Chrome, Edge and Firefox cache folders only. Locked files are skipped and listed |
+| Disk Analyzer | Pick a drive or folder and scan it on a worker thread with progress and Cancel. Shows the largest folders as a sortable tree with size bars, and the 100 largest files. Reparse points (junctions, symlinks) are skipped and unreadable folders are counted. **Open in Explorer** and **Move to Recycle Bin** (confirmed; see Safety) |
+| Drive Health | Read-only health of every physical drive from Windows storage WMI: Healthy / Warning / Unhealthy written out in text, media and bus type, and temperature, wear, power-on hours and error counts (admin) |
 | Driver Updater | Lists installed drivers with a search box, a toggle to hide Microsoft inbox drivers and an "old driver" flag. Also scans Windows Update for non-GPU drivers, installs the ones you select after creating a restore point, backs up drivers with `pnputil`, links to official GPU vendor pages, and lists System Restore points so you can keep or delete each one |
 | Services | Lists every Win32 service. You can start, stop or restart a service and set its start type to Automatic, Automatic (Delayed), Manual or Disabled. Critical services show a warning, and services on the protected list are blocked in the core library |
-| Processes | Sortable table with search. You can end a process or a whole process tree, or open its file location. Critical system processes cannot be ended |
-| Uninstaller | Apps from the HKLM, 32-bit HKLM and HKCU Uninstall keys, with duplicates removed. Runs the app's own uninstaller or its quiet uninstaller. System components and updates are hidden by default. Optionally lists winget apps and uninstalls them by winget id |
+| Processes | Sortable table with search. You can end a process or a whole process tree, or open its file location. Critical system processes cannot be ended. The **Network connections** tab lists TCP and UDP endpoints (IPv4 and IPv6) with process, PID, local and remote address and TCP state, refreshed every 2 s while the tab is open; filter by process, PID or port and end the owning process through the same guard |
+| Uninstaller | Apps from the HKLM, 32-bit HKLM and HKCU Uninstall keys, with duplicates removed. Runs the app's own uninstaller or its quiet uninstaller. System components and updates are hidden by default. Optionally lists winget apps and uninstalls them by winget id. The **App updates** tab lists `winget upgrade` results (GPU driver packages are left out), and upgrades the packages you tick, one at a time, through winget's own window |
 | Resources | Graphs over the last 60 s, 5 min or 30 min for per-core CPU, RAM, swap/pagefile, disk read/write and network |
-| Settings | 8 themes (Dark, Light, Midnight, Nord, Dracula, Solarized Dark, Forest, High contrast), accessibility options (below), refresh interval, alert thresholds for CPU, RAM and disk (shown as a Windows toast at most once every 5 minutes per alert), the "old driver" age, check for driver updates on startup, start with Windows |
+| Settings | 8 themes (Dark, Light, Midnight, Nord, Dracula, Solarized Dark, Forest, High contrast), accessibility options (below), refresh interval, alert thresholds for CPU, RAM and disk (shown as a Windows toast at most once every 5 minutes per alert), the "old driver" age, check for driver updates on startup, start with Windows, optional system tray mode (below), and **Export system report...** |
 
 Sizes are shown in binary units (KiB, MiB, GiB). The UI strings come from a string table that is ready for translation; only English exists today.
 
@@ -43,7 +45,7 @@ Sizes are shown in binary units (KiB, MiB, GiB). The UI strings come from a stri
 - **Text and control size:** 75% to 200% in Settings. Ctrl+= / Ctrl+- / Ctrl+0 work anywhere and are remembered.
 - **High contrast theme:** black, white and yellow, aimed at WCAG AAA text contrast. All accent buttons are tested for at least 4.5:1 contrast on every theme.
 - **Reduce motion:** turns off animations and smooth scrolling.
-- **Keyboard:** Tab / Shift+Tab move focus, which has a 2 px outline. Ctrl+1 to Ctrl+9 jump to pages, F11 toggles fullscreen and Esc leaves it. The full list is under Settings > Keyboard shortcuts.
+- **Keyboard:** Tab / Shift+Tab move focus, which has a 2 px outline. Ctrl+1 to Ctrl+9 jump to the first nine pages, Ctrl+PageDown / Ctrl+PageUp cycle through all pages, F11 toggles fullscreen and Esc leaves it. The full list is under Settings > Keyboard shortcuts.
 - **Small windows and large text:** tables shorten text with "…" instead of wrapping, the sidebar scrolls when it doesn't fit, and Settings scrolls.
 
 ## Window
@@ -66,6 +68,47 @@ Sizes are shown in binary units (KiB, MiB, GiB). The UI strings come from a stri
 - While a search or install is running, Rustacer will not stop `wuauserv` or clear the Windows Update cache, either from the cleaner or from the Services page.
 - Drivers whose date is a placeholder (Intel uses 1968-07-18 for INF-only packages) are not flagged "old".
 
+## Disk analyzer
+
+- The scan is read-only. It never follows junctions or symlinks (so nothing is counted twice and the scan cannot wander off the chosen folder), counts folders it cannot read, and can be cancelled. Sizes are file sizes, not size on disk, and hard links are counted once per name.
+- Folders under 1 MiB below the first level are folded into their parents so a whole-drive result stays small.
+- **Move to Recycle Bin** is the only action that changes anything, and it only ever moves to the Recycle Bin (`SHFileOperationW` with `FOF_ALLOWUNDO`; the shell's own prompt is left on, so an item too big for the bin is asked about instead of being deleted). It works only on a path you selected, only after a confirmation, and only on fixed local drives. Just before acting, the core library re-checks that the path is still inside the folder you scanned, that no link lies on the way, that it is not a system file, and that it is not under `C:\Windows`, `C:\Program Files*`, `C:\ProgramData`, a drive root, a top-level folder of the system drive or a user profile folder.
+
+## Boot performance
+
+The Boot performance tab in Startup Apps reads events 100 (boot duration) and 101 (applications that slowed boot) from `Microsoft-Windows-Diagnostics-Performance/Operational` with the Windows Event Log API, falling back to `wevtutil`. Reading that log needs administrator rights; without them the tab shows a **Restart as admin** prompt. Slow applications are matched to a startup entry by executable name, so you can jump straight to the entry and disable it.
+
+## Drive health
+
+The Health page uses `MSFT_PhysicalDisk` (health status, media type, bus type) from `root\Microsoft\Windows\Storage`, which works for any user, and `MSFT_StorageReliabilityCounter` (temperature, wear, power-on hours, read and write errors), which needs admin. If the Storage classes are not available it falls back to `Win32_DiskDrive` and `MSStorageDriver_FailurePredictStatus`. Counters can only raise a state (for example a very high temperature or 90% wear gives Warning); they never hide a problem Windows reported. It never runs any drive command and changes nothing.
+
+## App updates (winget)
+
+- **Check for updates** runs `winget upgrade --include-unknown --disable-interactivity --accept-source-agreements` (listing only, cancellable).
+- **Nothing is installed until you tick packages and confirm.** Each ticked package then runs `winget upgrade --id <id> --exact` through ShellExecute, one at a time, so winget's own window and any UAC prompt appear. Rustacer adds no silent or force flags.
+- Package ids are validated before they are passed on.
+- **GPU driver packages are left out** (NVIDIA graphics driver and GeForce, AMD Software / Adrenalin and Radeon, Intel graphics and Arc), matched on both the winget id and the name. The tab says how many were left out and why; use Driver Updater > GPU for the vendor's official page.
+
+## System tray
+
+Off by default. Under Settings > System tray:
+
+- **Close to tray** makes the close button hide the window instead of quitting. The tray icon's tooltip shows CPU and RAM, and its menu has **Open Rustacer** and **Quit Rustacer**. Alerts and toasts keep working while the window is hidden.
+- **Start minimized to tray** is available only when **Start with Windows** is on. The login launch then carries `--tray` and starts hidden once the tray icon exists (a launch from the Start menu always opens the window). The window can flash on screen for a moment at start.
+- Nothing starts with Windows unless you turn it on in Settings.
+- Quit stops the background threads and removes the icon before the process ends. `rustacer.exe --tray-test` scripts a close, open, close, quit round trip and exits non-zero if the process does not exit.
+
+## System report
+
+Dashboard and Settings both have **Export system report...**. You choose HTML or JSON, whether to include third-party services (programs outside the Windows folder), and whether to include identity; then a save dialog asks where to write the file, and nothing is written anywhere else. The report has system information, drives, drive health, non-Microsoft drivers, startup entries and installed apps.
+
+- **Redaction is on by default.** The PC name, the user name and `C:\Users\<name>` paths (for every account, except Public and Default) are replaced with placeholders in every field and key. User names of four or more characters are removed wherever they appear, shorter ones only as whole words so ordinary text is not mangled. Tick "Include the PC name and user name" to keep them.
+- The HTML page is one file with inline CSS: no scripts, images, fonts or external requests. Serial numbers are not included.
+
+## Network connections
+
+The Network connections tab in Processes uses `GetExtendedTcpTable` and `GetExtendedUdpTable` for IPv4 and IPv6 with the owning process id. It refreshes every 2 s only while the tab is open (and the window is visible). **End process** uses the same confirmation and critical-process guard as the Processes tab.
+
 ## Safety
 
 - **The cleaner only deletes inside whitelisted folders.**
@@ -75,6 +118,10 @@ Sizes are shown in binary units (KiB, MiB, GiB). The UI strings come from a stri
   - In browser profiles only `Cache`, `Code Cache`, `GPUCache` (Chromium) and `cache2` (Firefox) are touched. Cookies, history, logins and profiles are never touched.
 - **Protected services are enforced in the core library, not just hidden in the UI.** These cannot be stopped, restarted or disabled: RpcSs, DcomLaunch, LSM, WinDefend, EventLog, Winmgmt, PlugPlay, Power, BFE, mpssvc and others. `wuauserv` is locked while the driver updater is scanning or installing.
 - **Critical processes cannot be ended:** csrss, wininit, smss, lsass, services, winlogon, System and the other kernel processes. When you end a process tree, every member is checked before anything is killed.
+- **Nothing is ever deleted permanently by the disk analyzer.** It moves to the Recycle Bin, only paths you picked, after re-checking each one (see Disk analyzer). System locations, links and system files are refused.
+- **App updates are never installed without you.** You tick, you confirm, and winget shows its own prompts; GPU driver packages are always excluded.
+- **The system report hides the PC name and user name by default** and is written only where you choose.
+- **Nothing runs automatically at startup** except what you turn on in Settings (start with Windows, check for driver updates on startup, tray options).
 - Every destructive or system-changing action goes through a confirmation dialog and is logged to `%LOCALAPPDATA%\Rustacer\logs`.
 
 ## Administrator rights
@@ -85,6 +132,7 @@ Admin-only actions return a clear "administrator rights are required" message, a
 - HKLM startup entries and scheduled tasks
 - service control
 - driver install and backup
+- the Boot performance tab, and drive temperature, wear and error counters (the rest of Drive Health works without admin)
 
 ## Build
 
@@ -101,8 +149,9 @@ The output is `target/release/rustacer.exe`.
 `rustacer.exe --smoke-test` shows every page and driver tab for 2.5 s each and then exits; a panic gives a non-zero exit code.
 `rustacer.exe --screenshots <dir>` saves a PNG of a fixed tour of pages. It only triggers read-only actions (a cleaner scan and a Windows Update search).
 `rustacer.exe --resize-test <dir>` captures pages at the minimum size, a large size, maximized, fullscreen and restored, plus high-contrast and 150%-scale views, and logs the window and screen sizes.
+`rustacer.exe --tray-test` checks the tray round trip (hide, show, quit) and writes `rustacer-tray-test.txt` to the temp folder.
 None of these test modes save window or UI state to your profile.
-The read-only live tests run with `cargo test -p rustacer-core --test live_readonly -- --ignored --nocapture`. They list services, drivers, apps and startup entries, scan cleaner sizes, and run a Windows Update driver search. They never change anything.
+The read-only live tests run with `cargo test -p rustacer-core --test live_readonly -- --ignored --nocapture`. They list services, drivers, apps and startup entries, scan cleaner sizes, run a Windows Update driver search, read drive health, the boot log, the connection tables and the winget upgrade list, and build a redacted system report in memory. One test adds a tray icon for about a second. None of them change anything on the system.
 
 Files:
 - **Config:** `%APPDATA%\Rustacer\config.toml`. An unreadable config is kept as `config.toml.bad` and replaced by the defaults.
@@ -110,7 +159,7 @@ Files:
 
 ## Project layout
 
-- `rustacer-core` holds all the system logic and no GUI code. Modules: `cleaner`, `drivers` (`installed`, `wua`, `restore`, `backup`, `gpu`, `version`), `startup`, `services`, `processes`, `uninstaller`, `metrics`, `config`.
+- `rustacer-core` holds all the system logic and no GUI code. Modules: `cleaner`, `diskusage`, `drivehealth`, `bootperf`, `netconn`, `report`, `tray`, `drivers` (`installed`, `wua`, `restore`, `backup`, `gpu`, `version`), `startup`, `services`, `processes`, `uninstaller`, `metrics`, `config`.
 - `rustacer` is the egui binary.
 - Every OS call runs on a worker thread that reports back over a channel, so the UI never blocks. The exceptions are the native file and folder pickers, which are modal by design.
 - COM is initialized per thread through an RAII guard. The Windows Update Agent, WMI and Task Scheduler use the multithreaded apartment; ShellExecute uses a single-threaded apartment.
@@ -119,7 +168,10 @@ Files:
 
 - These paths are covered by unit tests in temp folders and by guards, but were not exercised by automated runs against a real system: restore-point creation and deletion, driver backup, and service or process changes. Listing restore points also needs admin, so it was not run live.
 - Disk I/O in Resources is the sum of per-process I/O, so it undercounts system-level I/O.
-- The winget list is parsed by column position, so it may misparse on non-English systems.
+- The winget list and upgrade tables are parsed by column position, so they may misparse on non-English systems or with wide (CJK) characters in names.
+- Not exercised against a real system by automated runs: Move to Recycle Bin, `winget upgrade --id`, and (without admin) the boot log and the drive reliability counters. They are covered by unit tests, guards and fixtures. The tray round trip and the read-only listings were run live.
+- Boot performance depends on Windows having recorded boot diagnostics; if the log was cleared or diagnostics are off, the tab says so.
+- "Start minimized to tray" briefly shows the window before hiding it, because the GUI toolkit shows the first frame.
 - `egui_plot` 0.37 targets egui 0.36, so the GUI uses eframe/egui 0.36. `cargo audit` reports only an "unmaintained" notice for `ttf-parser`, which comes in through egui's font stack.
 
 ## License
