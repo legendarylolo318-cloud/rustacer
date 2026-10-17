@@ -1482,6 +1482,13 @@ impl App {
 
     /// `winget upgrade` listing on a worker thread (read-only, cancellable).
     pub fn check_upgrades(&mut self) {
+        if !self.elevated {
+            self.notify(
+                true,
+                "App updates need administrator rights. Use \"Restart as admin\".",
+            );
+            return;
+        }
         let u = &mut self.uninst.updates;
         if u.checking || u.running {
             return;
@@ -1602,6 +1609,14 @@ impl App {
                 })
             }
             Act::WingetUpgrade(list) => {
+                if !self.elevated {
+                    self.notify(
+                        true,
+                        "App updates need administrator rights. Use \"Restart as admin\".",
+                    );
+                    return;
+                }
+                let list = uninstaller::upgrade_order(list);
                 let u = &mut self.uninst.updates;
                 u.running = true;
                 u.results.clear();

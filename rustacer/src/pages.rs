@@ -100,7 +100,7 @@ pub fn show(app: &mut App, ui: &mut Ui, ctx: &Context) {
         Page::Drivers => drivers(app, ui),
         Page::Services => services_page(app, ui),
         Page::Processes => processes(app, ui),
-        Page::Uninstaller => uninstaller(app, ui),
+        Page::Uninstaller => uninstaller(app, ui, ctx),
         Page::Resources => resources(app, ui),
         Page::Settings => settings(app, ui),
     }
@@ -2455,7 +2455,7 @@ fn processes_list(app: &mut App, ui: &mut Ui) {
 
 // ---------------- uninstaller ----------------
 
-fn uninstaller(app: &mut App, ui: &mut Ui) {
+fn uninstaller(app: &mut App, ui: &mut Ui, ctx: &Context) {
     heading(ui, tr(Lang::English, "nav.uninstaller"));
     if !app.uninst.winget_probed {
         app.uninst.winget_probed = true;
@@ -2480,7 +2480,7 @@ fn uninstaller(app: &mut App, ui: &mut Ui) {
     });
     ui.separator();
     if app.uninst.tab == UninstTab::Updates {
-        app_updates(app, ui);
+        app_updates(app, ui, ctx);
         return;
     }
     ui.horizontal(|ui| {
@@ -2620,13 +2620,27 @@ fn uninstaller(app: &mut App, ui: &mut Ui) {
 
 type AppEntryOwned = rustacer_core::uninstaller::AppEntry;
 
-fn app_updates(app: &mut App, ui: &mut Ui) {
+fn app_updates(app: &mut App, ui: &mut Ui, ctx: &Context) {
     ui.label(
         RichText::new(
-            "Uses winget. Nothing is installed until you tick packages and confirm; winget then shows its own window and any UAC prompt.",
+            "Uses winget. Nothing is installed until you tick packages and confirm; winget then shows its own window for each one.",
         )
         .weak(),
     );
+    if !app.elevated {
+        ui.add_space(6.0);
+        ui.colored_label(
+            ui.visuals().warn_fg_color,
+            "App updates need administrator rights, so winget can install without a separate prompt for every package.",
+        );
+        if ui
+            .add(primary_btn(ui, tr(Lang::English, "admin.restart")))
+            .clicked()
+        {
+            app.restart_as_admin(ctx);
+        }
+        return;
+    }
     match app.uninst.winget_ok {
         None => {
             ui.horizontal(|ui| {
@@ -2819,7 +2833,7 @@ fn app_updates(app: &mut App, ui: &mut Ui) {
         app.ask(
             "Upgrade applications",
             format!(
-                "Run 'winget upgrade --id <id> --exact' for each of these, one at a time:\n{}\n\nwinget opens its own window and Windows may ask for permission (UAC). Rustacer adds no silent or force options.",
+                "Run 'winget upgrade --id <id> --exact' for each of these, one at a time:\n{}\n\nwinget opens its own window for each one. App Installer (winget itself) is always updated last. Rustacer adds no silent or force options.",
                 lines.join("\n")
             ),
             Some("Updating an app that is running may close it. Save your work first.".into()),

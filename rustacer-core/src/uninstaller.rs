@@ -449,17 +449,45 @@ pub fn list_upgrades(cancel: &AtomicBool) -> Result<UpgradeList> {
 /// exit code (`None` if Windows gave no process handle). No silent or force flags are passed.
 pub fn winget_upgrade(id: &str) -> Result<Option<u32>> {
     validate_winget_id(id)?;
-    if let Some((_, why)) = gpu_driver_reason("", id).map(|w| ((), w)) {
+    if let Some(why) = gpu_driver_reason("", id) {
         return Err(CoreError::Blocked(format!(
             "'{id}' is a {why} package; Rustacer never installs GPU drivers."
         )));
     }
+    // Upgrades run elevated, so winget does not need a UAC prompt per package.
+    crate::admin::require_admin()?;
     info!("winget upgrade --id {id} --exact");
     shell_execute_wait(
         "open",
-        "winget",
+        &winget_launcher(),
         Some(&format!("upgrade --id {id} --exact")),
     )
+}
+
+/// winget's App Installer package id. Upgrading it replaces winget itself.
+pub const WINGET_SELF_ID: &str = "Microsoft.AppInstaller";
+
+/// The stable `winget.exe` execution alias in the user's WindowsApps folder. Launching plain
+/// "winget" can resolve to the versioned package folder, which disappears as soon as App
+/// Installer (winget itself) is upgraded, so later launches fail.
+pub fn winget_launcher() -> String {
+    std::env::var_os("LOCALAPPDATA")
+        .map(|d| {
+            std::path::PathBuf::from(d)
+                .join("Microsoft")
+                .join("WindowsApps")
+                .join("winget.exe")
+        })
+        .filter(|p| p.exists())
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "winget".into())
+}
+
+/// Run order for a batch: the user's order, except that App Installer (winget itself) goes
+/// last, so upgrading winget cannot break the launches after it.
+pub fn upgrade_order(mut list: Vec<WingetUpgrade>) -> Vec<WingetUpgrade> {
+    list.sort_by_key(|u| u.id.eq_ignore_ascii_case(WINGET_SELF_ID));
+    list
 }
 
 #[cfg(test)]
@@ -710,6 +738,37 @@ Pinned Tool    Vendor.PinnedTool   1.0      2.0        winget\n\
         ] {
             assert!(validate_winget_id(bad).is_err(), "{bad:?}");
         }
+    }
+
+    #[test]
+    fn winget_itself_is_upgraded_last() {
+        let mk = |id: &str| WingetUpgrade {
+            name: id.into(),
+            id: id.into(),
+            version: "1".into(),
+            available: "2".into(),
+            source: "winget".into(),
+        };
+        let order = upgrade_order(vec![
+            mk("Microsoft.AppInstaller"),
+            mk("Bitwarden.Bitwarden"),
+            mk("Microsoft.Edge"),
+        ]);
+        let ids: Vec<&str> = order.iter().map(|u| u.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec![
+                "Bitwarden.Bitwarden",
+                "Microsoft.Edge",
+                "Microsoft.AppInstaller"
+            ]
+        );
+    }
+
+    #[test]
+    fn launcher_is_the_alias_or_plain_winget() {
+        let l = winget_launcher();
+        assert!(l == "winget" || l.to_ascii_lowercase().ends_with(r"\windowsapps\winget.exe"));
     }
 
     #[test]

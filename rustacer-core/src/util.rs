@@ -15,7 +15,8 @@ use windows::Win32::System::Com::{
 };
 use windows::Win32::System::Threading::{GetExitCodeProcess, WaitForSingleObject};
 use windows::Win32::UI::Shell::{
-    ShellExecuteExW, ShellExecuteW, SEE_MASK_NOASYNC, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW,
+    ShellExecuteExW, ShellExecuteW, SEE_MASK_FLAG_NO_UI, SEE_MASK_NOASYNC, SEE_MASK_NOCLOSEPROCESS,
+    SHELLEXECUTEINFOW,
 };
 use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
 
@@ -166,7 +167,8 @@ pub fn shell_execute_wait(verb: &str, file: &str, params: Option<&str>) -> Resul
     let params_w = params.map(wide);
     let mut info = SHELLEXECUTEINFOW {
         cbSize: std::mem::size_of::<SHELLEXECUTEINFOW>() as u32,
-        fMask: SEE_MASK_NOCLOSEPROCESS | SEE_MASK_NOASYNC,
+        // NO_UI: a failure comes back as an error instead of a modal Windows dialog.
+        fMask: SEE_MASK_NOCLOSEPROCESS | SEE_MASK_NOASYNC | SEE_MASK_FLAG_NO_UI,
         lpVerb: PCWSTR::from_raw(verb_w.as_ptr()),
         lpFile: PCWSTR::from_raw(file_w.as_ptr()),
         lpParameters: params_w

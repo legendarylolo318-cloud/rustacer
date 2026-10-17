@@ -3,6 +3,14 @@
 All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Changed
+- App updates (winget) now require administrator rights; without them the tab shows Restart as admin.
+
+### Fixed
+- Upgrading App Installer (winget itself) in a batch broke every package after it with "Windows cannot access the specified device, path, or file": winget is now launched through its stable alias, App Installer is upgraded last, and a failed launch is reported in the results instead of a Windows error dialog.
+
 ## [0.3.0] - 2026-10-17
 
 ### Added

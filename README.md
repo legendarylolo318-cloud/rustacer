@@ -96,7 +96,9 @@ The Health page uses `MSFT_PhysicalDisk` (health status, media type, bus type) f
 ## App updates (winget)
 
 - **Check for updates** runs `winget upgrade --include-unknown --disable-interactivity --accept-source-agreements` (listing only, cancellable).
-- **Nothing is installed until you tick packages and confirm.** Each ticked package then runs `winget upgrade --id <id> --exact` through ShellExecute, one at a time, so winget's own window and any UAC prompt appear. Rustacer adds no silent or force flags.
+- **App updates need administrator rights.** Without them the tab only offers **Restart as admin**, so winget does not have to ask for permission separately for every package.
+- **Nothing is installed until you tick packages and confirm.** Each ticked package then runs `winget upgrade --id <id> --exact` through ShellExecute, one at a time, in winget's own window. Rustacer adds no silent or force flags.
+- App Installer (winget itself) is always updated last, and winget is started through its stable `WindowsApps\winget.exe` alias, so updating winget cannot break the packages after it.
 - Package ids are validated before they are passed on.
 - **GPU driver packages are left out** (NVIDIA graphics driver and GeForce, AMD Software / Adrenalin and Radeon, Intel graphics and Arc), matched on both the winget id and the name. The tab says how many were left out and why; use Driver Updater > GPU for the vendor's official page.
 
