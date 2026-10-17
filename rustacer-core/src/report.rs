@@ -1415,4 +1415,22 @@ mod tests {
         assert!(matches!(r, Err(CoreError::Cancelled)));
         assert!(!p.exists());
     }
+
+    #[test]
+    fn script_in_an_app_name_is_inert_in_html_and_json() {
+        let mut d = mock();
+        d.apps[0].name = "<script>alert(1)</script><img src=x onerror=alert(2)>".into();
+        d.apps[0].publisher = "\"><svg onload=alert(3)>".into();
+        let tree = prepare(&d, &Options::default(), &red());
+        let html = to_html(&tree);
+        let low = html.to_lowercase();
+        assert!(!low.contains("<script"), "script tag must be escaped");
+        assert!(!low.contains("<img") && !low.contains("<svg"));
+        assert!(html.contains("&lt;script&gt;alert(1)&lt;/script&gt;"));
+        assert!(html.contains("&quot;&gt;&lt;svg"));
+        // JSON keeps the text as data, correctly quoted.
+        let json = to_json(&tree);
+        assert!(json.contains("\"<script>alert(1)</script><img src=x onerror=alert(2)>\""));
+        assert!(json.contains("\"\\\"><svg onload=alert(3)>\""));
+    }
 }
