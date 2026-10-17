@@ -233,6 +233,8 @@ pub fn assess(d: &mut DriveHealth) {
 #[serde(rename = "MSFT_PhysicalDisk")]
 #[serde(rename_all = "PascalCase")]
 pub struct RawPhysicalDisk {
+    /// Key used to reach the disk's reliability counters (never shown or exported).
+    pub object_id: Option<String>,
     pub device_id: Option<String>,
     pub friendly_name: Option<String>,
     pub serial_number: Option<String>,
@@ -450,23 +452,19 @@ fn read_storage(con: &wmi::WMIConnection) -> Result<HealthReport> {
         ));
     }
     let mut notes = Vec::new();
-    let mut counters: HashMap<String, Reliability> = HashMap::new();
-    match con.query::<RawReliability>() {
-        Ok(rows) => {
-            for r in rows {
-                if let Some(id) = r.device_id.clone() {
-                    counters.insert(id, reliability_from_raw(&r));
-                }
-            }
-        }
-        Err(e) => {
+    let (counters, err) = read_counters(con, &disks);
+    if counters.is_empty() {
+        if let Some(e) = &err {
             info!("reliability counters unavailable: {e}");
-            notes.push(
-                "Temperature, wear, power-on hours and error counters need administrator rights \
-                 (or the drive does not provide them)."
-                    .to_string(),
-            );
         }
+        notes.push(if crate::admin::is_elevated() {
+            "Windows returned no reliability counters (temperature, wear, power-on hours, \
+             errors) for these drives. Some drives and drivers do not provide them."
+                .to_string()
+        } else {
+            "Temperature, wear, power-on hours and error counters need administrator rights."
+                .to_string()
+        });
     }
     // SMART failure prediction only for drives Windows could not rate.
     let mut predict: HashMap<String, bool> = HashMap::new();
@@ -483,6 +481,56 @@ fn read_storage(con: &wmi::WMIConnection) -> Result<HealthReport> {
         source: "Storage WMI (MSFT_PhysicalDisk)".into(),
         notes,
     })
+}
+
+/// Escape a value for a WQL object path (`Class.Key="value"`).
+pub fn wql_escape(v: &str) -> String {
+    v.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+/// The `ASSOCIATORS OF` query that reaches one disk's reliability counters. This is how
+/// `Get-StorageReliabilityCounter` gets them; listing the class directly returns nothing.
+pub fn counters_query(object_id: &str) -> String {
+    format!(
+        "ASSOCIATORS OF {{MSFT_PhysicalDisk.ObjectId=\"{}\"}} WHERE AssocClass = MSFT_PhysicalDiskToStorageReliabilityCounter",
+        wql_escape(object_id)
+    )
+}
+
+/// Reliability counters keyed by `MSFT_PhysicalDisk.DeviceId`: first through each disk's
+/// association, then (for any disk still missing) by listing the class. Needs admin.
+fn read_counters(
+    con: &wmi::WMIConnection,
+    disks: &[RawPhysicalDisk],
+) -> (HashMap<String, Reliability>, Option<String>) {
+    let mut out = HashMap::new();
+    let mut last_err = None;
+    for d in disks {
+        let (Some(oid), Some(id)) = (d.object_id.as_deref(), d.device_id.as_deref()) else {
+            continue;
+        };
+        match con.raw_query::<RawReliability>(counters_query(oid)) {
+            Ok(rows) => {
+                if let Some(r) = rows.first() {
+                    out.insert(id.to_string(), reliability_from_raw(r));
+                }
+            }
+            Err(e) => last_err = Some(e.to_string()),
+        }
+    }
+    if out.len() < disks.len() {
+        match con.query::<RawReliability>() {
+            Ok(rows) => {
+                for r in rows {
+                    if let Some(id) = r.device_id.clone() {
+                        out.entry(id).or_insert_with(|| reliability_from_raw(&r));
+                    }
+                }
+            }
+            Err(e) => last_err = Some(e.to_string()),
+        }
+    }
+    (out, last_err)
 }
 
 /// failure-predict flags keyed by the physical disk number (admin; SMART drives only).
@@ -558,6 +606,7 @@ mod tests {
 
     fn disk(id: &str, name: &str, health: u16, media: u16, bus: u16) -> RawPhysicalDisk {
         RawPhysicalDisk {
+            object_id: None,
             device_id: Some(id.into()),
             friendly_name: Some(name.into()),
             serial_number: Some("SN123 ".into()),
@@ -754,5 +803,15 @@ mod tests {
         assert_eq!(v[2].health, Health::Unhealthy);
         assert_eq!(v[2].predict_failure, None);
         assert_eq!(v[2].bus, "USB");
+    }
+
+    #[test]
+    fn counters_query_escapes_the_object_id() {
+        let oid = r#"{1}\\PC\root/Microsoft/Windows/Storage/Providers_v2\SPACES_PhysicalDisk.ObjectId="{a}:PD:{b}""#;
+        let q = counters_query(oid);
+        assert_eq!(
+            q,
+            r#"ASSOCIATORS OF {MSFT_PhysicalDisk.ObjectId="{1}\\\\PC\\root/Microsoft/Windows/Storage/Providers_v2\\SPACES_PhysicalDisk.ObjectId=\"{a}:PD:{b}\""} WHERE AssocClass = MSFT_PhysicalDiskToStorageReliabilityCounter"#
+        );
     }
 }
