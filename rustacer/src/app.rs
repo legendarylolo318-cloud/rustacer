@@ -1817,13 +1817,22 @@ impl App {
         let Some(t0) = started else {
             let (page, tab) = SMOKE_STEPS[step];
             info!(
-                "smoke test: showing {page:?} {tab:?} (loaded so far: {} startup, {} drivers, {} services, {} processes, {} apps, {} history samples)",
+                "smoke test: showing {page:?} {tab:?} (loaded so far: {} startup, {} drivers, {} services, {} processes, {} apps, {} history samples, {} drives with health, {} connections, boot log {}, winget {:?})",
                 self.startup.entries.len(),
                 self.drivers.installed.len(),
                 self.services.list.len(),
                 self.procs.list.len(),
                 self.uninst.list.len(),
-                self.history.len()
+                self.history.len(),
+                self.health.report.as_ref().map_or(0, |r| r.drives.len()),
+                self.procs.net.list.len(),
+                match (&self.startup.boot.report, &self.startup.boot.error) {
+                    (Some(r), _) => format!("{} boots", r.boots.len()),
+                    (None, Some(_)) => "error".to_string(),
+                    (None, None) if !self.elevated => "needs admin".to_string(),
+                    (None, None) => "loading".to_string(),
+                },
+                self.uninst.winget_ok
             );
             self.goto(page);
             self.show_sub(tab);
