@@ -20,6 +20,7 @@ fn en(key: &'static str) -> &'static str {
         "nav.dashboard" => "Dashboard",
         "nav.startup" => "Startup Apps",
         "nav.cleaner" => "System Cleaner",
+        "nav.disk" => "Disk Analyzer",
         "nav.drivers" => "Driver Updater",
         "nav.uninstaller" => "Uninstaller",
         "nav.resources" => "Resources",
@@ -32,6 +33,12 @@ fn en(key: &'static str) -> &'static str {
         "common.refresh" => "Refresh",
         "common.cancel" => "Cancel",
         "common.confirm" => "Confirm",
+        "common.browse" => "Browse...",
+        "disk.scan" => "Scan",
+        "disk.folders" => "Largest folders",
+        "disk.files" => "Largest files (top 100)",
+        "disk.open" => "Open in Explorer",
+        "disk.recycle" => "Move to Recycle Bin",
         other => other,
     }
 }

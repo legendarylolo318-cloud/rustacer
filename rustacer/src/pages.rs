@@ -1,5 +1,5 @@
 use crate::app::*;
-use crate::widgets::{admin_banner, danger_btn, gauge, heading, primary_btn};
+use crate::widgets::{admin_banner, danger_btn, gauge, heading, primary_btn, size_bar};
 use eframe::egui::{self, Color32, Context, RichText, Sense, Ui};
 use egui_extras::{Column, TableBuilder};
 use egui_plot::{Line, Plot, PlotPoints};
@@ -95,6 +95,7 @@ pub fn show(app: &mut App, ui: &mut Ui, ctx: &Context) {
         Page::Dashboard => dashboard(app, ui),
         Page::Startup => startup(app, ui),
         Page::Cleaner => cleaner(app, ui),
+        Page::DiskAnalyzer => disk_page(app, ui),
         Page::Drivers => drivers(app, ui),
         Page::Services => services_page(app, ui),
         Page::Processes => processes(app, ui),
@@ -477,6 +478,440 @@ fn cleaner(app: &mut App, ui: &mut Ui) {
                 },
             );
         }
+    }
+}
+
+// ---------------- disk analyzer ----------------
+
+/// Visible tree rows as (node index, depth), honouring expansion and sort order.
+fn disk_rows(
+    rep: &rustacer_core::diskusage::DiskReport,
+    expanded: &std::collections::HashSet<usize>,
+    col: usize,
+    asc: bool,
+) -> Vec<(usize, usize)> {
+    let mut out = Vec::new();
+    if rep.nodes.is_empty() {
+        return out;
+    }
+    let mut stack = vec![(0usize, 0usize)];
+    while let Some((i, depth)) = stack.pop() {
+        out.push((i, depth));
+        if !expanded.contains(&i) {
+            continue;
+        }
+        let mut kids = rep.nodes[i].children.clone();
+        kids.sort_by(|&a, &b| {
+            let (x, y) = (&rep.nodes[a], &rep.nodes[b]);
+            let o = match col {
+                0 => x.name.to_lowercase().cmp(&y.name.to_lowercase()),
+                2 => x.files.cmp(&y.files),
+                _ => x.size.cmp(&y.size),
+            };
+            if asc {
+                o
+            } else {
+                o.reverse()
+            }
+        });
+        for k in kids.into_iter().rev() {
+            stack.push((k, depth + 1));
+        }
+    }
+    out
+}
+
+fn disk_page(app: &mut App, ui: &mut Ui) {
+    let t = |k| tr(Lang::English, k);
+    heading(ui, t("nav.disk"));
+    ui.label(
+        RichText::new(
+            "Read-only scan. Links and junctions are not followed. Sizes are file sizes, not size on disk.",
+        )
+        .weak(),
+    );
+    ui.horizontal_wrapped(|ui| {
+        ui.label("Drive");
+        for d in &app.snap.disks {
+            let label = d.mount.trim_end_matches('\\').to_string();
+            if ui
+                .selectable_label(app.disk.root == d.mount, label)
+                .clicked()
+            {
+                app.disk.root = d.mount.clone();
+            }
+        }
+    });
+    let mut scan = false;
+    ui.horizontal_wrapped(|ui| {
+        ui.label("Folder");
+        ui.add(
+            egui::TextEdit::singleline(&mut app.disk.root)
+                .desired_width((ui.available_width() - 300.0).clamp(140.0, 420.0)),
+        );
+        if ui.button(t("common.browse")).clicked() {
+            if let Some(p) = rfd::FileDialog::new().pick_folder() {
+                app.disk.root = p.to_string_lossy().into_owned();
+            }
+        }
+        if ui
+            .add_enabled(!app.disk.scanning, primary_btn(ui, t("disk.scan")))
+            .clicked()
+        {
+            scan = true;
+        }
+        if app.disk.scanning {
+            if ui.button(t("common.cancel")).clicked() {
+                app.disk
+                    .cancel
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+            ui.spinner();
+        }
+    });
+    if scan {
+        app.scan_disk();
+    }
+    if let Some(p) = &app.disk.progress {
+        ui.label(format!(
+            "Scanning... {} files, {} in {} folders, {} unreadable",
+            p.files,
+            format_bytes(p.bytes),
+            p.folders,
+            p.inaccessible
+        ));
+        ui.label(RichText::new(&p.current).weak().small());
+    }
+    if let Some(e) = &app.disk.error {
+        ui.colored_label(Color32::from_rgb(0xe5, 0x48, 0x4d), e);
+    }
+    let Some(rep) = &app.disk.report else {
+        if !app.disk.scanning && app.disk.error.is_none() {
+            ui.add_space(6.0);
+            ui.label("Pick a drive or folder and press Scan.");
+        }
+        return;
+    };
+    ui.separator();
+    ui.label(format!(
+        "{}: {} in {} files and {} folders. {} folder(s) could not be read, {} link(s) skipped{}.",
+        rep.root.display(),
+        format_bytes(rep.total_bytes),
+        rep.total_files,
+        rep.total_folders,
+        rep.inaccessible_dirs,
+        rep.skipped_links,
+        if rep.folded_folders > 0 {
+            format!(
+                ", {} small folder(s) under 1 MiB are folded into their parents",
+                rep.folded_folders
+            )
+        } else {
+            String::new()
+        }
+    ));
+    if rep.cancelled {
+        ui.colored_label(
+            Color32::from_rgb(0xf5, 0xa6, 0x23),
+            "The scan was cancelled; these results are partial.",
+        );
+    }
+    if app.disk.stale {
+        ui.colored_label(
+            Color32::from_rgb(0xf5, 0xa6, 0x23),
+            "Items were moved to the Recycle Bin. Scan again to refresh the sizes.",
+        );
+    }
+    ui.horizontal(|ui| {
+        for (tab, key) in [
+            (DiskTab::Folders, "disk.folders"),
+            (DiskTab::Files, "disk.files"),
+        ] {
+            if ui.selectable_label(app.disk.tab == tab, t(key)).clicked() {
+                app.disk.tab = tab;
+            }
+        }
+    });
+
+    // Actions on the selected folder or file.
+    let sel = app.disk.selected.clone();
+    let mut open: Option<std::path::PathBuf> = None;
+    let mut recycle: Option<(std::path::PathBuf, bool)> = None;
+    ui.horizontal_wrapped(|ui| {
+        let refusal = sel
+            .as_ref()
+            .and_then(|(p, _)| rustacer_core::diskusage::protected_reason(p));
+        if ui
+            .add_enabled(sel.is_some(), egui::Button::new(t("disk.open")))
+            .clicked()
+        {
+            open = sel.as_ref().map(|(p, _)| p.clone());
+        }
+        let allowed = sel.is_some() && refusal.is_none() && !app.disk.recycling;
+        let r = ui.add_enabled(allowed, danger_btn(ui, t("disk.recycle")));
+        let r = match &refusal {
+            Some(why) => r.on_disabled_hover_text(format!("Not allowed: {why}")),
+            None => r,
+        };
+        if r.clicked() {
+            recycle = sel.clone();
+        }
+        match &sel {
+            Some((p, _)) => ui.label(RichText::new(p.display().to_string()).weak()),
+            None => ui.label(RichText::new("Select a folder or file below.").weak()),
+        };
+        if let Some(why) = &refusal {
+            ui.colored_label(
+                Color32::from_rgb(0xf5, 0xa6, 0x23),
+                format!("Protected: {why}"),
+            );
+        }
+    });
+    if let Some(p) = open {
+        app.spawn(move |bus| {
+            if let Err(e) = reveal_in_explorer(&p) {
+                bus.err(e.to_string());
+            }
+        });
+    }
+
+    let Some(rep) = &app.disk.report else { return };
+    let (k, salt) = table_layout(ui);
+    let mut select: Option<(std::path::PathBuf, bool)> = None;
+    let mut toggle: Option<usize> = None;
+    let mut new_sort: Option<usize> = None;
+    match app.disk.tab {
+        DiskTab::Folders => {
+            let rows = disk_rows(
+                rep,
+                &app.disk.expanded,
+                app.disk.sort_col,
+                app.disk.sort_asc,
+            );
+            TableBuilder::new(ui)
+                .id_salt(("disk-folders", salt))
+                .striped(true)
+                .resizable(true)
+                .sense(Sense::click())
+                .column(Column::initial(k * 400.0).clip(true))
+                .column(Column::initial(k * 90.0))
+                .column(Column::initial(k * 200.0))
+                .column(Column::remainder().resizable(false).at_least(60.0))
+                .header(ROW_H, |mut h| {
+                    for (i, label) in ["Folder", "Size", "Share of parent", "Files"]
+                        .into_iter()
+                        .enumerate()
+                    {
+                        h.col(|ui| {
+                            // "Share of parent" sorts by size too.
+                            let col = if i == 2 {
+                                1
+                            } else if i == 3 {
+                                2
+                            } else {
+                                i
+                            };
+                            let arrow = if app.disk.sort_col == col && i != 2 {
+                                if app.disk.sort_asc {
+                                    " ^"
+                                } else {
+                                    " v"
+                                }
+                            } else {
+                                ""
+                            };
+                            if ui
+                                .add(
+                                    egui::Button::new(
+                                        RichText::new(format!("{label}{arrow}")).strong(),
+                                    )
+                                    .frame(false),
+                                )
+                                .clicked()
+                            {
+                                new_sort = Some(col);
+                            }
+                        });
+                    }
+                })
+                .body(|body| {
+                    body.rows(ROW_H, rows.len(), |mut row| {
+                        let (i, depth) = rows[row.index()];
+                        let n = &rep.nodes[i];
+                        let is_sel = app
+                            .disk
+                            .selected
+                            .as_ref()
+                            .is_some_and(|(p, d)| *d && *p == n.path);
+                        row.set_selected(is_sel);
+                        row.col(|ui| {
+                            ui.horizontal(|ui| {
+                                ui.add_space(depth as f32 * 14.0);
+                                if n.children.is_empty() {
+                                    ui.add_space(22.0);
+                                } else {
+                                    let open = app.disk.expanded.contains(&i);
+                                    let r = ui.small_button(if open { "v" } else { ">" });
+                                    let verb = if open { "Collapse" } else { "Expand" };
+                                    r.widget_info(|| {
+                                        egui::WidgetInfo::labeled(
+                                            egui::WidgetType::Button,
+                                            true,
+                                            format!("{verb} {}", n.name),
+                                        )
+                                    });
+                                    if r.clicked() {
+                                        toggle = Some(i);
+                                    }
+                                }
+                                ui.label(&n.name)
+                                    .on_hover_text(n.path.display().to_string());
+                            });
+                        });
+                        row.col(|ui| {
+                            ui.label(format_bytes(n.size));
+                        });
+                        row.col(|ui| {
+                            let parent_size = n.parent.map_or(n.size, |p| rep.nodes[p].size);
+                            let frac = if parent_size == 0 {
+                                0.0
+                            } else {
+                                n.size as f32 / parent_size as f32
+                            };
+                            let pct = frac * 100.0;
+                            let caption = if pct < 1.0 && n.size > 0 {
+                                "<1%".to_string()
+                            } else {
+                                format!("{pct:.0}%")
+                            };
+                            let spoken = format!(
+                                "{}: {} ({caption} of {})",
+                                n.name,
+                                format_bytes(n.size),
+                                if n.parent.is_some() {
+                                    "its parent folder"
+                                } else {
+                                    "the scanned folder"
+                                }
+                            );
+                            size_bar(ui, frac, &caption, &spoken);
+                        });
+                        row.col(|ui| {
+                            ui.label(n.files.to_string());
+                        });
+                        if row.response().clicked() {
+                            select = Some((n.path.clone(), true));
+                        }
+                    });
+                });
+        }
+        DiskTab::Files => {
+            TableBuilder::new(ui)
+                .id_salt(("disk-files", salt))
+                .striped(true)
+                .resizable(true)
+                .sense(Sense::click())
+                .column(Column::initial(k * 100.0))
+                .column(Column::initial(k * 260.0).clip(true))
+                .column(
+                    Column::remainder()
+                        .resizable(false)
+                        .at_least(80.0)
+                        .clip(true),
+                )
+                .header(ROW_H, |mut h| {
+                    for t in ["Size", "File", "Folder"] {
+                        h.col(|ui| {
+                            ui.strong(t);
+                        });
+                    }
+                })
+                .body(|body| {
+                    body.rows(ROW_H, rep.top_files.len(), |mut row| {
+                        let f = &rep.top_files[row.index()];
+                        row.set_selected(
+                            app.disk
+                                .selected
+                                .as_ref()
+                                .is_some_and(|(p, d)| !*d && *p == f.path),
+                        );
+                        row.col(|ui| {
+                            ui.label(format_bytes(f.size));
+                        });
+                        row.col(|ui| {
+                            ui.label(
+                                f.path
+                                    .file_name()
+                                    .map(|n| n.to_string_lossy().into_owned())
+                                    .unwrap_or_default(),
+                            );
+                        });
+                        row.col(|ui| {
+                            ui.label(
+                                f.path
+                                    .parent()
+                                    .map(|p| p.display().to_string())
+                                    .unwrap_or_default(),
+                            );
+                        });
+                        if row.response().clicked() {
+                            select = Some((f.path.clone(), false));
+                        }
+                    });
+                });
+        }
+    }
+    if let Some(i) = toggle {
+        if !app.disk.expanded.remove(&i) {
+            app.disk.expanded.insert(i);
+        }
+    }
+    if let Some(s) = select {
+        app.disk.selected = Some(s);
+    }
+    if let Some(c) = new_sort {
+        if app.disk.sort_col == c {
+            app.disk.sort_asc = !app.disk.sort_asc;
+        } else {
+            app.disk.sort_col = c;
+            // Names start A-Z; sizes and counts start largest-first.
+            app.disk.sort_asc = c == 0;
+        }
+    }
+    if let Some((path, is_dir)) = recycle {
+        let (size, files) = match app.disk.report.as_ref() {
+            Some(r) if is_dir => r
+                .nodes
+                .iter()
+                .find(|n| n.path == path)
+                .map_or((0, 0), |n| (n.size, n.files)),
+            Some(r) => (
+                r.top_files
+                    .iter()
+                    .find(|f| f.path == path)
+                    .map_or(0, |f| f.size),
+                1,
+            ),
+            None => (0, 0),
+        };
+        let root = app
+            .disk
+            .report
+            .as_ref()
+            .map(|r| r.root.clone())
+            .unwrap_or_default();
+        app.ask(
+            "Move to Recycle Bin",
+            format!(
+                "Move this {} to the Recycle Bin?\n{}\n{} in {} file(s)",
+                if is_dir { "folder" } else { "file" },
+                path.display(),
+                format_bytes(size),
+                files
+            ),
+            Some("You can restore it from the Recycle Bin. If Windows says it is too big for the Recycle Bin it will ask before deleting anything.".into()),
+            Act::RecycleDisk(root, vec![path]),
+        );
     }
 }
 
@@ -1815,7 +2250,11 @@ fn settings_body(app: &mut App, ui: &mut Ui) {
                 for (k, what) in [
                     ("Tab / Shift+Tab", "Move between controls"),
                     ("Space / Enter", "Press the focused button or toggle"),
-                    ("Ctrl+1 ... Ctrl+9", "Go to Dashboard ... Settings"),
+                    (
+                        "Ctrl+1 ... Ctrl+9",
+                        "Go to the first nine pages (sidebar order)",
+                    ),
+                    ("Ctrl+PageDown / Ctrl+PageUp", "Next / previous page"),
                     (
                         "Ctrl+=  /  Ctrl+-  /  Ctrl+0",
                         "Bigger / smaller / default size",

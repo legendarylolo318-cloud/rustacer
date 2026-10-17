@@ -17,6 +17,8 @@ enum Prep {
     None,
     ScanCleaner,
     ScanDrivers,
+    /// Scan the folder holding this executable (read-only, nothing personal in it).
+    ScanDisk,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -83,6 +85,13 @@ fn readme_tour() -> Vec<Step> {
             Prep::None,
             Theme::Dark,
         ),
+        step(
+            "disk",
+            Page::DiskAnalyzer,
+            None,
+            Prep::ScanDisk,
+            Theme::Dark,
+        ),
         step("services", Page::Services, None, Prep::None, Theme::Dark),
         step("settings", Page::Settings, None, Prep::None, Theme::Dark),
         step(
@@ -117,6 +126,7 @@ fn resize_tour() -> Vec<Step> {
     ];
     let pages = [
         ("dashboard", Page::Dashboard, None),
+        ("disk", Page::DiskAnalyzer, None),
         ("drivers", Page::Drivers, Some(DriverTab::Installed)),
         ("services", Page::Services, None),
         ("resources", Page::Resources, None),
@@ -125,7 +135,12 @@ fn resize_tour() -> Vec<Step> {
     for (sname, win) in states {
         for (i, (pname, page, tab)) in pages.iter().enumerate() {
             let name: &'static str = Box::leak(format!("{sname}-{pname}").into_boxed_str());
-            let mut s = step(name, *page, *tab, Prep::None, Theme::Dark);
+            let prep = if *page == Page::DiskAnalyzer {
+                Prep::ScanDisk
+            } else {
+                Prep::None
+            };
+            let mut s = step(name, *page, *tab, prep, Theme::Dark);
             // Change the window once per state, on its first page.
             if i == 0 {
                 s.win = Some(win);
@@ -214,6 +229,7 @@ fn prep_done(app: &App, prep: Prep) -> bool {
         Prep::None => true,
         Prep::ScanCleaner => !app.cleaner.scanning,
         Prep::ScanDrivers => app.drivers.scanned_once && !app.drivers.scanning,
+        Prep::ScanDisk => app.disk.report.is_some() && !app.disk.scanning,
     }
 }
 
@@ -260,6 +276,15 @@ pub fn tick(app: &mut App, ctx: &Context) {
         match st.prep {
             Prep::None => {}
             Prep::ScanCleaner => app.scan_cleaner(),
+            Prep::ScanDisk => {
+                if let Some(dir) = std::env::current_exe()
+                    .ok()
+                    .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+                {
+                    app.disk.root = dir.to_string_lossy().into_owned();
+                    app.scan_disk();
+                }
+            }
             Prep::ScanDrivers => {
                 app.drivers.show_all_updates = true;
                 app.scan_driver_updates();

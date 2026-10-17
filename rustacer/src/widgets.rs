@@ -94,6 +94,44 @@ pub fn admin_banner(ui: &mut Ui, elevated: bool, needed: bool) -> bool {
     clicked
 }
 
+/// A horizontal bar filled to `frac` (0..=1) with a text caption beside it, for table cells.
+/// The caption carries the value in text, and `spoken` is what screen readers announce.
+pub fn size_bar(ui: &mut Ui, frac: f32, caption: &str, spoken: &str) {
+    let w = ui.available_width().max(24.0);
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(w, 16.0), Sense::hover());
+    resp.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::WidgetType::ProgressIndicator, true, spoken)
+    });
+    let text_w = 40.0_f32.min(w * 0.5);
+    let bar = egui::Rect::from_min_max(
+        Pos2::new(rect.left(), rect.top() + 3.0),
+        Pos2::new(rect.right() - text_w - 4.0, rect.bottom() - 3.0),
+    );
+    let painter = ui.painter_at(rect);
+    painter.rect_filled(
+        bar,
+        CornerRadius::same(2),
+        ui.visuals().widgets.inactive.bg_fill,
+    );
+    let f = frac.clamp(0.0, 1.0);
+    if f > 0.0 {
+        let mut fill = bar;
+        fill.set_width((bar.width() * f).max(2.0).min(bar.width()));
+        painter.rect_filled(
+            fill,
+            CornerRadius::same(2),
+            ui.visuals().selection.stroke.color,
+        );
+    }
+    painter.text(
+        Pos2::new(rect.right(), rect.center().y),
+        egui::Align2::RIGHT_CENTER,
+        caption,
+        egui::FontId::proportional(12.0),
+        ui.visuals().text_color(),
+    );
+}
+
 const INK: Color32 = Color32::from_rgb(0x10, 0x14, 0x1c);
 
 fn channel(c: u8) -> f32 {

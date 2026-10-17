@@ -1,6 +1,7 @@
 use eframe::egui::{self, Color32, Context};
 use rustacer_core::cleaner::{self, Category, CleanReport, ScanResult};
 use rustacer_core::config::{Config, Theme};
+use rustacer_core::diskusage::{self, DiskReport, ScanProgress as DiskProgress};
 use rustacer_core::drivers::backup::{self, BackupResult};
 use rustacer_core::drivers::gpu::GpuVendor;
 use rustacer_core::drivers::installed::{self, InstalledDriver};
@@ -11,7 +12,7 @@ use rustacer_core::processes::{ProcessInfo, ProcessMonitor};
 use rustacer_core::services::{self, Action as SvcAction, ServiceInfo};
 use rustacer_core::startup::{self, StartupEntry};
 use rustacer_core::uninstaller::{self, AppEntry, WingetApp};
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
@@ -24,6 +25,7 @@ pub enum Page {
     Dashboard,
     Startup,
     Cleaner,
+    DiskAnalyzer,
     Drivers,
     Services,
     Processes,
@@ -33,10 +35,11 @@ pub enum Page {
 }
 
 impl Page {
-    pub const ALL: [Page; 9] = [
+    pub const ALL: [Page; 10] = [
         Page::Dashboard,
         Page::Startup,
         Page::Cleaner,
+        Page::DiskAnalyzer,
         Page::Drivers,
         Page::Services,
         Page::Processes,
@@ -49,6 +52,7 @@ impl Page {
             Page::Dashboard => "nav.dashboard",
             Page::Startup => "nav.startup",
             Page::Cleaner => "nav.cleaner",
+            Page::DiskAnalyzer => "nav.disk",
             Page::Drivers => "nav.drivers",
             Page::Services => "nav.services",
             Page::Processes => "nav.processes",
@@ -81,6 +85,10 @@ pub enum Msg {
     BackupLine(String),
     BackupDone(Result<BackupResult, String>),
     RestorePoints(Result<Vec<restore::RestorePoint>, String>),
+    DiskProgress(DiskProgress),
+    DiskDone(Result<Box<DiskReport>, String>),
+    /// Paths that were moved to the Recycle Bin from the disk analyzer.
+    DiskRecycled(Vec<PathBuf>),
     Notice {
         error: bool,
         text: String,
@@ -135,6 +143,8 @@ pub enum Act {
     RebootNow,
     BackupDrivers(PathBuf),
     DeleteRestorePoint(u32, String),
+    /// Move paths picked in the disk analyzer to the Recycle Bin (scan root, paths).
+    RecycleDisk(PathBuf, Vec<PathBuf>),
 }
 
 pub struct Confirm {
@@ -213,6 +223,33 @@ pub struct DriversState {
     pub backup_result: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DiskTab {
+    #[default]
+    Folders,
+    Files,
+}
+
+#[derive(Default)]
+pub struct DiskState {
+    pub root: String,
+    pub tab: DiskTab,
+    pub scanning: bool,
+    pub progress: Option<DiskProgress>,
+    pub cancel: Arc<AtomicBool>,
+    pub report: Option<DiskReport>,
+    pub error: Option<String>,
+    pub expanded: HashSet<usize>,
+    /// 0 = name, 1 = size, 2 = files.
+    pub sort_col: usize,
+    pub sort_asc: bool,
+    /// Selected path and whether it is a folder.
+    pub selected: Option<(PathBuf, bool)>,
+    /// Items were recycled after the scan, so the numbers are out of date.
+    pub stale: bool,
+    pub recycling: bool,
+}
+
 #[derive(Default)]
 pub struct ServicesState {
     pub list: Vec<ServiceInfo>,
@@ -264,6 +301,7 @@ pub struct App {
     pub startup: StartupState,
     pub cleaner: CleanerState,
     pub drivers: DriversState,
+    pub disk: DiskState,
     pub services: ServicesState,
     pub procs: ProcState,
     pub uninst: UninstState,
@@ -280,10 +318,11 @@ pub struct App {
     pub redact: bool,
 }
 
-const SMOKE_STEPS: [(Page, Option<DriverTab>); 13] = [
+const SMOKE_STEPS: [(Page, Option<DriverTab>); 14] = [
     (Page::Dashboard, None),
     (Page::Startup, None),
     (Page::Cleaner, None),
+    (Page::DiskAnalyzer, None),
     (Page::Drivers, Some(DriverTab::Installed)),
     (Page::Drivers, Some(DriverTab::Updates)),
     (Page::Drivers, Some(DriverTab::Backup)),
@@ -356,6 +395,10 @@ impl App {
             startup: StartupState::default(),
             cleaner: CleanerState::default(),
             drivers: DriversState::default(),
+            disk: DiskState {
+                sort_col: 1,
+                ..Default::default()
+            },
             services: ServicesState::default(),
             procs: ProcState {
                 sort_col: 2,
@@ -532,6 +575,32 @@ impl App {
                         Err(e) => self.drivers.rp_error = Some(e),
                     }
                 }
+                Msg::DiskProgress(p) => self.disk.progress = Some(p),
+                Msg::DiskDone(r) => {
+                    self.disk.scanning = false;
+                    self.disk.progress = None;
+                    match r {
+                        Ok(rep) => {
+                            self.disk.error = None;
+                            self.disk.expanded = HashSet::from([0]);
+                            self.disk.selected = None;
+                            self.disk.stale = false;
+                            self.disk.report = Some(*rep);
+                        }
+                        Err(e) => self.disk.error = Some(e),
+                    }
+                }
+                Msg::DiskRecycled(paths) => {
+                    self.disk.recycling = false;
+                    if !paths.is_empty() {
+                        self.disk.stale = true;
+                        self.disk.selected = None;
+                        if let Some(r) = &mut self.disk.report {
+                            r.top_files
+                                .retain(|f| !paths.iter().any(|p| f.path.starts_with(p)));
+                        }
+                    }
+                }
                 Msg::Notice { error, text } => self.notify(error, text),
                 Msg::Reload(Page::Drivers) if self.drivers.tab == DriverTab::RestorePoints => {
                     self.load_restore_points()
@@ -678,6 +747,30 @@ impl App {
         });
     }
 
+    /// Scan the folder in `disk.root` on a worker thread (read-only).
+    pub fn scan_disk(&mut self) {
+        if self.disk.scanning {
+            return;
+        }
+        let root = PathBuf::from(self.disk.root.trim());
+        if root.as_os_str().is_empty() {
+            self.notify(true, "Choose a drive or folder to scan first.");
+            return;
+        }
+        self.disk.scanning = true;
+        self.disk.error = None;
+        self.disk.progress = None;
+        self.disk.cancel.store(false, Ordering::Relaxed);
+        let cancel = self.disk.cancel.clone();
+        self.spawn(move |bus| {
+            let b2 = bus.clone();
+            let r = diskusage::scan(&root, &cancel, &mut |p| {
+                b2.send(Msg::DiskProgress(p.clone()))
+            });
+            bus.send(Msg::DiskDone(r.map(Box::new).map_err(|e| e.to_string())));
+        });
+    }
+
     pub fn scan_cleaner(&mut self) {
         self.cleaner.scanning = true;
         self.cleaner.report = None;
@@ -798,6 +891,25 @@ impl App {
                 });
             }
             Act::InstallDrivers(list) => self.start_install(list),
+            Act::RecycleDisk(root, paths) => {
+                self.disk.recycling = true;
+                self.spawn(move |bus| {
+                    info!(
+                        "recycling {} item(s) picked in the disk analyzer",
+                        paths.len()
+                    );
+                    match diskusage::recycle(&root, &paths) {
+                        Ok(n) => {
+                            bus.ok(format!("Moved {n} item(s) to the Recycle Bin."));
+                            bus.send(Msg::DiskRecycled(paths));
+                        }
+                        Err(e) => {
+                            bus.err(e.to_string());
+                            bus.send(Msg::DiskRecycled(vec![]));
+                        }
+                    }
+                });
+            }
             Act::DeleteRestorePoint(seq, desc) => self.spawn(move |bus| {
                 match restore::delete_restore_point(seq) {
                     Ok(()) => bus.ok(format!("Deleted restore point #{seq} ({desc}).")),
@@ -879,8 +991,25 @@ impl App {
                 KEYS.iter()
                     .position(|k| i.consume_key(egui::Modifiers::COMMAND, *k))
             });
-            if let Some(n) = hit {
+            if let Some(n) = hit.filter(|n| *n < Page::ALL.len()) {
                 self.goto(Page::ALL[n]);
+            }
+            // Ctrl+PageDown / Ctrl+PageUp: next / previous page, wrapping around.
+            let (next, prev) = ctx.input_mut(|i| {
+                (
+                    i.consume_key(egui::Modifiers::COMMAND, egui::Key::PageDown),
+                    i.consume_key(egui::Modifiers::COMMAND, egui::Key::PageUp),
+                )
+            });
+            if next || prev {
+                let n = Page::ALL.len();
+                let cur = Page::ALL.iter().position(|p| *p == self.page).unwrap_or(0);
+                let to = if next {
+                    (cur + 1) % n
+                } else {
+                    (cur + n - 1) % n
+                };
+                self.goto(Page::ALL[to]);
             }
         }
     }

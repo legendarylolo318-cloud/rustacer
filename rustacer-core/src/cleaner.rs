@@ -77,7 +77,7 @@ pub struct CleanReport {
 
 // ---------- path safety ----------
 
-fn is_reparse(meta: &std::fs::Metadata) -> bool {
+pub(crate) fn is_reparse(meta: &std::fs::Metadata) -> bool {
     meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
 }
 

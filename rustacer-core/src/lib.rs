@@ -3,6 +3,7 @@
 pub mod admin;
 pub mod cleaner;
 pub mod config;
+pub mod diskusage;
 pub mod drivers;
 pub mod error;
 pub mod metrics;
