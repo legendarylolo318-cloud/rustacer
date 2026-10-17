@@ -7,7 +7,7 @@
 
 use crate::cleaner::is_reparse;
 use crate::error::{CoreError, Result};
-use crate::util::{wide, ComGuard};
+use crate::util::{format_bytes, wide, ComGuard};
 use std::cmp::Reverse;
 use std::collections::BinaryHeap;
 use std::ffi::OsString;
@@ -18,10 +18,12 @@ use std::time::{Duration, Instant};
 use tracing::info;
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::HWND;
-use windows::Win32::Storage::FileSystem::GetDriveTypeW;
+use windows::Win32::Storage::FileSystem::{GetDriveTypeW, GetVolumeNameForVolumeMountPointW};
 use windows::Win32::UI::Shell::{
     SHFileOperationW, FOF_ALLOWUNDO, FOF_NOERRORUI, FO_DELETE, SHFILEOPSTRUCTW,
 };
+use winreg::enums::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE};
+use winreg::RegKey;
 
 const FILE_ATTRIBUTE_SYSTEM: u32 = 0x4;
 const DRIVE_FIXED: u32 = 3;
@@ -356,6 +358,113 @@ pub fn protected_reason_for(path: &Path, system_drive: Option<char>) -> Option<S
     None
 }
 
+/// Names Windows would silently rewrite (trailing dots or spaces) or that address an
+/// alternate data stream (`file:stream`) are refused, so what is checked is what is acted on.
+fn odd_name_reason(p: &Path) -> Option<String> {
+    let s = p.to_string_lossy();
+    let body = s.strip_prefix(r"\\?\").unwrap_or(&s);
+    if body.char_indices().any(|(i, c)| c == ':' && i != 1) {
+        return Some("it names an alternate data stream or device".into());
+    }
+    for c in p.components() {
+        if let Component::Normal(n) = c {
+            let n = n.to_string_lossy();
+            if n.ends_with('.') || n.ends_with(' ') {
+                return Some("a name ends with a dot or space, which Windows rewrites".into());
+            }
+        }
+    }
+    None
+}
+
+/// `\\?\C:\x` -> `C:\x`; refuses anything that is not a plain drive-letter path.
+fn plain_drive_path(canon: &Path) -> Result<PathBuf> {
+    let s = canon.to_string_lossy().replace('/', "\\");
+    let plain = s.strip_prefix(r"\\?\").unwrap_or(&s).to_string();
+    let b = plain.as_bytes();
+    if b.len() < 4 || !b[0].is_ascii_alphabetic() || b[1] != b':' || b[2] != b'\\' {
+        return Err(CoreError::Blocked(format!(
+            "'{plain}' is not on a local drive letter; the Recycle Bin is not used there"
+        )));
+    }
+    Ok(PathBuf::from(plain))
+}
+
+/// Recycle Bin settings that decide whether Windows would delete permanently instead.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct BinPolicy {
+    /// Group policy "Do not move deleted files to the Recycle Bin".
+    pub no_recycle_policy: bool,
+    /// "Don't move files to the Recycle Bin. Remove files immediately when deleted."
+    pub nuke_on_delete: bool,
+    /// Maximum size of this drive's Recycle Bin, when known.
+    pub max_bytes: Option<u64>,
+}
+
+/// Why moving `item` bytes (of `total` for this drive) would not land in the Recycle Bin.
+pub fn bin_refusal(p: &BinPolicy, item: u64, total: u64) -> Option<String> {
+    if p.no_recycle_policy {
+        return Some(
+            "a policy on this PC turns the Recycle Bin off, so it would be deleted permanently"
+                .into(),
+        );
+    }
+    if p.nuke_on_delete {
+        return Some(
+            "the Recycle Bin is turned off for this drive, so it would be deleted permanently"
+                .into(),
+        );
+    }
+    if let Some(max) = p.max_bytes {
+        if item > max || total > max {
+            return Some(format!(
+                "it is bigger than this drive's Recycle Bin ({}), so Windows would offer to delete it permanently",
+                format_bytes(max)
+            ));
+        }
+    }
+    None
+}
+
+fn dword(root: &RegKey, path: &str, name: &str) -> Option<u32> {
+    root.open_subkey(path).ok()?.get_value::<u32, _>(name).ok()
+}
+
+/// Read the Recycle Bin settings for drive `letter`.
+pub fn bin_policy(letter: char) -> BinPolicy {
+    const POL: &str = r"Software\Microsoft\Windows\CurrentVersion\Policies\Explorer";
+    const BIN: &str = r"Software\Microsoft\Windows\CurrentVersion\Explorer\BitBucket";
+    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+    let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
+    let mut p = BinPolicy {
+        no_recycle_policy: dword(&hkcu, POL, "NoRecycleFiles") == Some(1)
+            || dword(&hklm, POL, "NoRecycleFiles") == Some(1),
+        ..Default::default()
+    };
+    // The per-volume key is named after the volume GUID.
+    let mount = wide(format!("{letter}:\\"));
+    let mut buf = [0u16; 64];
+    // SAFETY: `mount` is NUL-terminated and `buf` is a writable buffer of the given length.
+    let ok =
+        unsafe { GetVolumeNameForVolumeMountPointW(PCWSTR::from_raw(mount.as_ptr()), &mut buf) }
+            .is_ok();
+    if ok {
+        let name = String::from_utf16_lossy(&buf);
+        if let (Some(a), Some(b)) = (name.find('{'), name.find('}')) {
+            let key = format!(r"{BIN}\Volume\{}", &name[a..=b]);
+            p.nuke_on_delete = dword(&hkcu, &key, "NukeOnDelete") == Some(1);
+            p.max_bytes = dword(&hkcu, &key, "MaxCapacity").map(|mb| u64::from(mb) * 1024 * 1024);
+        }
+    }
+    // Older single-setting layout.
+    if dword(&hkcu, BIN, "UseGlobalSettings") == Some(1)
+        && dword(&hkcu, BIN, "NukeOnDelete") == Some(1)
+    {
+        p.nuke_on_delete = true;
+    }
+    p
+}
+
 /// Check that `target` may be recycled given the folder that was scanned. Returns the
 /// canonical path. Nothing is touched.
 pub fn check_deletable(scan_root: &Path, target: &Path) -> Result<PathBuf> {
@@ -365,6 +474,17 @@ pub fn check_deletable(scan_root: &Path, target: &Path) -> Result<PathBuf> {
     }
     if let Some(why) = protected_reason(target) {
         return Err(blocked(format!("refused because {why}")));
+    }
+    if let Some(why) = odd_name_reason(target) {
+        return Err(blocked(why));
+    }
+    // The scanned folder itself may have been swapped for a link since the scan.
+    let root_meta = std::fs::symlink_metadata(scan_root)
+        .map_err(|e| blocked(format!("the scanned folder cannot be read ({e})")))?;
+    if is_reparse(&root_meta) || !root_meta.is_dir() {
+        return Err(blocked(
+            "the scanned folder is now a link or not a folder; scan again".into(),
+        ));
     }
     let meta = std::fs::symlink_metadata(target)
         .map_err(|e| blocked(format!("cannot be read ({e}); it may already be gone")))?;
@@ -413,22 +533,23 @@ pub fn check_deletable(scan_root: &Path, target: &Path) -> Result<PathBuf> {
 }
 
 /// Move user-picked paths to the Recycle Bin. Every path is validated first and nothing
-/// moves if any one is refused. Only local fixed drives are accepted, so Windows never
-/// falls back to a permanent delete for lack of a Recycle Bin.
+/// moves if any one is refused. Only local fixed drives are accepted, and the Recycle Bin
+/// settings are checked first, so Windows never falls back to a permanent delete for lack of
+/// a Recycle Bin, a "remove immediately" setting, or an item too big for the bin.
 pub fn recycle(scan_root: &Path, paths: &[PathBuf]) -> Result<usize> {
     if paths.is_empty() {
         return Ok(0);
     }
+    let mut targets: Vec<PathBuf> = Vec::new();
+    let mut per_drive: std::collections::HashMap<char, u64> = std::collections::HashMap::new();
+    let mut sizes: Vec<(char, u64, String)> = Vec::new();
     for p in paths {
-        check_deletable(scan_root, p)?;
-        let s = p.to_string_lossy();
-        let b = s.as_bytes();
-        if b.len() < 3 || !b[0].is_ascii_alphabetic() || b[1] != b':' || b[2] != b'\\' {
-            return Err(CoreError::Blocked(format!(
-                "'{s}' is not on a local drive letter; the Recycle Bin is not used there"
-            )));
-        }
-        let root = wide(format!("{}:\\", b[0] as char));
+        let canon = check_deletable(scan_root, p)?;
+        // Act on exactly the path that was checked.
+        let plain = plain_drive_path(&canon)?;
+        let s = plain.to_string_lossy().into_owned();
+        let letter = s.chars().next().unwrap_or('C').to_ascii_uppercase();
+        let root = wide(format!("{letter}:\\"));
         // SAFETY: `root` is a live NUL-terminated buffer for the duration of the call.
         let kind = unsafe { GetDriveTypeW(PCWSTR::from_raw(root.as_ptr())) };
         if kind != DRIVE_FIXED {
@@ -436,7 +557,37 @@ pub fn recycle(scan_root: &Path, paths: &[PathBuf]) -> Result<usize> {
                 "'{s}' is not on a fixed local drive; there is no Recycle Bin to move it to"
             )));
         }
+        let meta = std::fs::symlink_metadata(&plain)?;
+        let size = if meta.is_dir() {
+            // A folder must not carry links along: refuse rather than reason about them.
+            let rep = scan(&plain, &AtomicBool::new(false), &mut |_| {})?;
+            if rep.skipped_links > 0 {
+                return Err(CoreError::Blocked(format!(
+                    "'{s}' contains {} link(s) or junction(s); remove those first",
+                    rep.skipped_links
+                )));
+            }
+            if rep.inaccessible_dirs > 0 {
+                return Err(CoreError::Blocked(format!(
+                    "'{s}' has {} folder(s) Rustacer cannot read, so it cannot be checked",
+                    rep.inaccessible_dirs
+                )));
+            }
+            rep.total_bytes
+        } else {
+            meta.len()
+        };
+        *per_drive.entry(letter).or_insert(0) += size;
+        sizes.push((letter, size, s));
+        targets.push(plain);
     }
+    for (letter, size, s) in &sizes {
+        let total = per_drive.get(letter).copied().unwrap_or(*size);
+        if let Some(why) = bin_refusal(&bin_policy(*letter), *size, total) {
+            return Err(CoreError::Blocked(format!("'{s}': {why}")));
+        }
+    }
+    let paths = &targets;
     // pFrom is a list of NUL-terminated paths ended by an extra NUL.
     let mut from: Vec<u16> = Vec::new();
     for p in paths {
@@ -731,5 +882,140 @@ mod tests {
         assert!(r.is_err());
         assert!(keep.exists());
         assert_eq!(recycle(t.path(), &[]).unwrap(), 0);
+    }
+
+    #[test]
+    fn scan_root_swapped_for_a_junction_is_refused() {
+        let real = tempfile::tempdir().unwrap();
+        write(&real.path().join("f.bin"), 5);
+        let parent = tempfile::tempdir().unwrap();
+        let link = parent.path().join("root");
+        if junction(&link, real.path()).is_none() {
+            eprintln!("mklink /J unavailable; skipping");
+            return;
+        }
+        // Scanning a junction root is refused...
+        assert!(scan(&link, &AtomicBool::new(false), &mut |_| {}).is_err());
+        // ...and so is acting through one, even though the file itself is ordinary.
+        let e = check_deletable(&link, &link.join("f.bin")).unwrap_err();
+        assert!(e.to_string().contains("link"), "{e}");
+    }
+
+    #[test]
+    fn dot_dot_and_odd_names_cannot_escape() {
+        let t = tempfile::tempdir().unwrap();
+        let root = t.path().join("root");
+        write(&root.join("in.bin"), 1);
+        write(&t.path().join("outside.bin"), 1);
+        for p in [
+            root.join("..").join("outside.bin"),
+            root.join("sub").join("..").join("..").join("outside.bin"),
+            PathBuf::from(format!("{}:stream", root.join("in.bin").display())),
+            PathBuf::from(format!("{}.", root.join("in.bin").display())),
+            PathBuf::from(format!("{} ", root.join("in.bin").display())),
+        ] {
+            assert!(
+                check_deletable(&root, &p).is_err(),
+                "{} must be refused",
+                p.display()
+            );
+        }
+        assert!(check_deletable(&root, &root.join("in.bin")).is_ok());
+        // "." is normalised away by Path, so it is the same file, not an escape.
+        assert!(check_deletable(&root, &root.join(".").join("in.bin")).is_ok());
+    }
+
+    #[test]
+    fn short_8dot3_names_of_protected_folders_are_resolved_and_refused() {
+        // PROGRA~1 is usually C:\Program Files; when 8.3 names exist the canonical check
+        // catches it even though the text does not say "Program Files".
+        let short = Path::new(r"C:\PROGRA~1");
+        if short.exists() {
+            assert!(check_deletable(Path::new(r"C:\"), short).is_err());
+            assert!(check_deletable(short, &short.join("Common Files")).is_err());
+        }
+        assert!(check_deletable(Path::new(r"\\?\C:\"), Path::new(r"\\?\C:\Windows")).is_err());
+        assert!(check_deletable(Path::new(r"\\.\C:\"), Path::new(r"\\.\C:\Windows")).is_err());
+    }
+
+    #[test]
+    fn hidden_and_read_only_files_are_user_files() {
+        let t = tempfile::tempdir().unwrap();
+        let h = t.path().join("hidden.bin");
+        let r = t.path().join("readonly.bin");
+        write(&h, 3);
+        write(&r, 4);
+        let a = Command::new("attrib").arg("+h").arg(&h).output().unwrap();
+        let b = Command::new("attrib").arg("+r").arg(&r).output().unwrap();
+        if !(a.status.success() && b.status.success()) {
+            return;
+        }
+        // Counted by the scan...
+        let rep = scan_quiet(t.path());
+        assert_eq!((rep.total_files, rep.total_bytes), (2, 7));
+        // ...and allowed (to the Recycle Bin only) like any other file the user picks.
+        assert!(check_deletable(t.path(), &h).is_ok());
+        assert!(check_deletable(t.path(), &r).is_ok());
+        let _ = Command::new("attrib").arg("-r").arg(&r).output();
+    }
+
+    #[test]
+    fn plain_paths_only() {
+        assert_eq!(
+            plain_drive_path(Path::new(r"\\?\C:\a\b")).unwrap(),
+            PathBuf::from(r"C:\a\b")
+        );
+        assert_eq!(
+            plain_drive_path(Path::new("D:/x/y")).unwrap(),
+            PathBuf::from(r"D:\x\y")
+        );
+        assert!(plain_drive_path(Path::new(r"\\?\UNC\server\share\x")).is_err());
+        assert!(plain_drive_path(Path::new(r"\\server\share\x")).is_err());
+        assert!(plain_drive_path(Path::new(r"C:\")).is_err());
+    }
+
+    #[test]
+    fn recycle_bin_settings_that_would_delete_permanently_are_refused() {
+        let ok = BinPolicy {
+            max_bytes: Some(1000),
+            ..Default::default()
+        };
+        assert_eq!(bin_refusal(&ok, 10, 20), None);
+        assert!(bin_refusal(&ok, 1001, 1001).is_some(), "item too big");
+        assert!(bin_refusal(&ok, 600, 1200).is_some(), "batch too big");
+        let nuke = BinPolicy {
+            nuke_on_delete: true,
+            ..Default::default()
+        };
+        assert!(bin_refusal(&nuke, 1, 1).unwrap().contains("turned off"));
+        let pol = BinPolicy {
+            no_recycle_policy: true,
+            ..Default::default()
+        };
+        assert!(bin_refusal(&pol, 1, 1).unwrap().contains("policy"));
+        // Unknown capacity: no size limit is assumed.
+        assert_eq!(bin_refusal(&BinPolicy::default(), u64::MAX, u64::MAX), None);
+    }
+
+    #[test]
+    fn live_bin_policy_reads_without_panicking() {
+        let p = bin_policy('C');
+        eprintln!("{p:?}");
+    }
+
+    #[test]
+    fn folders_containing_junctions_are_not_recycled() {
+        let t = tempfile::tempdir().unwrap();
+        let other = tempfile::tempdir().unwrap();
+        let dir = t.path().join("folder");
+        write(&dir.join("a.bin"), 1);
+        if junction(&dir.join("link"), other.path()).is_none() {
+            return;
+        }
+        // check_deletable alone allows the folder; recycle refuses before moving anything.
+        assert!(check_deletable(t.path(), &dir).is_ok());
+        let e = recycle(t.path(), std::slice::from_ref(&dir)).unwrap_err();
+        assert!(e.to_string().contains("link"), "{e}");
+        assert!(dir.join("a.bin").exists());
     }
 }
