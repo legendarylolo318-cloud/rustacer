@@ -43,6 +43,9 @@ pub struct Connection {
     /// `None` for UDP, which has no peer.
     pub remote: Option<IpAddr>,
     pub remote_port: u16,
+    /// IPv6 scope (interface) ids; 0 when not used.
+    pub local_scope: u32,
+    pub remote_scope: u32,
     /// TCP state name; empty for UDP.
     pub state: &'static str,
     pub pid: u32,
@@ -50,23 +53,25 @@ pub struct Connection {
 
 impl Connection {
     pub fn local_text(&self) -> String {
-        endpoint(self.local, self.local_port)
+        endpoint(self.local, self.local_scope, self.local_port)
     }
 
     /// `*:*` for UDP and for listening sockets (no peer yet).
     pub fn remote_text(&self) -> String {
         match self.remote {
             Some(ip) if self.remote_port != 0 || !ip.is_unspecified() => {
-                endpoint(ip, self.remote_port)
+                endpoint(ip, self.remote_scope, self.remote_port)
             }
             _ => "*:*".to_string(),
         }
     }
 }
 
-fn endpoint(ip: IpAddr, port: u16) -> String {
+/// `1.2.3.4:80`, `[::1]:80`, and `[fe80::1%12]:80` for scoped (link-local) addresses.
+fn endpoint(ip: IpAddr, scope: u32, port: u16) -> String {
     match ip {
         IpAddr::V4(a) => format!("{a}:{port}"),
+        IpAddr::V6(a) if scope != 0 => format!("[{a}%{scope}]:{port}"),
         IpAddr::V6(a) => format!("[{a}]:{port}"),
     }
 }
@@ -135,6 +140,8 @@ pub fn parse_tcp4(bytes: &[u8]) -> Vec<Connection> {
             local_port: port_at(r, 8),
             remote: Some(v4_at(r, 12)),
             remote_port: port_at(r, 16),
+            local_scope: 0,
+            remote_scope: 0,
             pid: u32_at(r, 20),
         })
         .collect()
@@ -151,6 +158,8 @@ pub fn parse_tcp6(bytes: &[u8]) -> Vec<Connection> {
             remote: Some(v6_at(r, 24)),
             remote_port: port_at(r, 44),
             state: tcp_state_name(u32_at(r, 48)),
+            local_scope: u32_at(r, 16),
+            remote_scope: u32_at(r, 40),
             pid: u32_at(r, 52),
         })
         .collect()
@@ -167,6 +176,8 @@ pub fn parse_udp4(bytes: &[u8]) -> Vec<Connection> {
             remote: None,
             remote_port: 0,
             state: "",
+            local_scope: 0,
+            remote_scope: 0,
             pid: u32_at(r, 8),
         })
         .collect()
@@ -183,6 +194,8 @@ pub fn parse_udp6(bytes: &[u8]) -> Vec<Connection> {
             remote: None,
             remote_port: 0,
             state: "",
+            local_scope: u32_at(r, 16),
+            remote_scope: 0,
             pid: u32_at(r, 24),
         })
         .collect()
@@ -387,5 +400,16 @@ mod tests {
         assert_eq!(tcp_state_name(5), "Established");
         assert_eq!(tcp_state_name(11), "Time wait");
         assert_eq!(tcp_state_name(99), "Unknown");
+    }
+
+    #[test]
+    fn link_local_ipv6_shows_its_scope() {
+        let ll: Ipv6Addr = "fe80::1".parse().unwrap();
+        let mut row = tcp6_row(5, ll, 5000, ll, 6000, 1);
+        row[16..20].copy_from_slice(&dword(12));
+        row[40..44].copy_from_slice(&dword(7));
+        let v = parse_tcp6(&table(1, vec![row]));
+        assert_eq!(v[0].local_text(), "[fe80::1%12]:5000");
+        assert_eq!(v[0].remote_text(), "[fe80::1%7]:6000");
     }
 }
